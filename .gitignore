@@ -3,6 +3,7 @@ bot/.env
 bot/node_modules/
 
 # Python Transcriber
+transcriber/.env
 transcriber/__pycache__/
 transcriber/.venv/
 transcriber/models/

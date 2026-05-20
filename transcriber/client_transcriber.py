@@ -2,7 +2,8 @@
 client_transcriber.py - ローカルPC用文字起こしクライアント (ハイブリッド構成用)
 
 起動時に空きVRAMをチェック（5GB以上必須）し、問題なければQwen3-ASRモデルをロード。
-その後、クラウドBotのWebSocketサーバーへリバース接続して、音声データの文字起こし＆翻訳を処理します。
+その後、クラウドBotのWebSocketサーバーへリバース接続して、音声データの文字起こしを処理します。
+※ DeepL翻訳はクラウド側で実行されるため、ローカルPCにDeepLキーは不要です。
 """
 
 import os
@@ -19,7 +20,6 @@ from datetime import datetime
 sys.path.append(os.path.dirname(os.path.abspath(__file__)))
 
 from qwen_asr_engine import QwenASREngine
-from translator import Translator
 
 # ── ログ設定 ──
 logging.basicConfig(
@@ -40,13 +40,20 @@ def load_dotenv(env_path):
                     key, val = line.split("=", 1)
                     os.environ[key.strip()] = val.strip()
 
-# 親フォルダの bot/.env を読み込む
+# .env の読み込み優先順位:
+# 1. transcriber/.env（ローカルクライアント専用設定）
+# 2. bot/.env（後方互換性のため）
+transcriber_env_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), ".env")
 bot_env_path = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "bot", ".env")
-load_dotenv(bot_env_path)
 
-# 設定値
-DEEPL_API_KEY = os.environ.get("DEEPL_API_KEY", "")
-# index.js の DASHBOARD_PORT (Express) で /hybrid 待受を行うため、デフォルトは3000ポート
+if os.path.exists(transcriber_env_path):
+    load_dotenv(transcriber_env_path)
+elif os.path.exists(bot_env_path):
+    load_dotenv(bot_env_path)
+else:
+    logger.warning("⚠️ .env ファイルが見つかりません。環境変数またはデフォルト値を使用します。")
+
+# 設定値（ローカルクライアントに必要なのは接続先URLのみ）
 CLOUD_BOT_WS_URL = os.environ.get("CLOUD_BOT_WS_URL", "ws://localhost:3000/hybrid")
 
 # ── VRAMチェック関数 ──
@@ -72,29 +79,17 @@ def check_vram_requirement():
 class HybridTranscriberClient:
     def __init__(self):
         self.engine = None
-        self.translator = None
         self.transcribe_lock = asyncio.Lock()
 
     async def initialize_engines(self):
-        """モデルと翻訳エンジンをロード"""
-        logger.info("--- Qwen3-ASR + DeepL ハイブリッドクライアント起動 ---")
+        """Qwen3-ASRモデルをロード"""
+        logger.info("--- Qwen3-ASR ハイブリッドクライアント起動 ---")
+        logger.info("📌 翻訳はクラウド側で実行されます。ローカルPCでは文字起こし（ASR）のみ行います。")
         
-        # 1. Qwen3-ASR
         logger.info("🤖 Qwen3-ASR モデルをVRAMにロード中...")
         self.engine = QwenASREngine()
         self.engine.load_model()
         logger.info("✅ Qwen3-ASR モデルのロード完了")
-
-        # 2. DeepL
-        if not DEEPL_API_KEY:
-            logger.warning("🚨 DEEPL_API_KEY が設定されていません。翻訳はスキップされ、文字起こしのみ行われます。")
-        else:
-            try:
-                self.translator = Translator(api_key=DEEPL_API_KEY)
-                logger.info("✅ DeepL 翻訳エンジン初期化完了")
-            except Exception as e:
-                logger.error(f"🚨 DeepL 初期化失敗: {e}")
-                self.translator = None
 
     async def run(self):
         # 1. 起動前VRAMチェック
@@ -102,7 +97,6 @@ class HybridTranscriberClient:
         
         if not vram_ok:
             logger.error(f"🚨 {vram_msg}")
-            # クラウドへ一時的にVRAMエラーを通知して終了を試みる
             await self.report_error_to_cloud(vram_msg)
             sys.exit(1)
 
@@ -130,13 +124,12 @@ class HybridTranscriberClient:
                         "free_vram_gb": free_gb
                     }))
                     
-                    logger.log(logging.INFO, "🎉 クライアントの登録完了！スタンバイOK。")
+                    logger.info("🎉 クライアントの登録完了！スタンバイOK。")
                     
                     # メッセージループ
                     async for message in ws:
                         data = json.loads(message)
                         if data.get("type") == "transcribe_request":
-                            # バックグラウンドタスクとして非同期に音声処理を呼び出す
                             asyncio.create_task(self.handle_transcribe_request(ws, data))
                             
             except (websockets.exceptions.ConnectionClosed, ConnectionRefusedError, OSError) as e:
@@ -157,12 +150,12 @@ class HybridTranscriberClient:
                     "error_message": error_message
                 }))
                 logger.info("✅ エラー情報の送信に成功しました。")
-                await asyncio.sleep(1) # 送信完了までの待機
+                await asyncio.sleep(1)
         except Exception as e:
             logger.warning(f"⚠️ クラウドBotへエラーを送信できませんでした (Botが未起動の可能性があります): {e}")
 
     async def handle_transcribe_request(self, ws, request):
-        """音声の文字起こしと翻訳を実行し、WebSocketで結果を返却"""
+        """音声の文字起こしを実行し、WebSocketで結果を返却（翻訳はクラウド側で実行）"""
         try:
             user_id = request["user_id"]
             username = request["username"]
@@ -170,7 +163,6 @@ class HybridTranscriberClient:
             audio_base64 = request["audio_base64"]
             sample_rate = request["sample_rate"]
             channels = request["channels"]
-            target_lang = request["target_lang"]
             detect_lang = request.get("detect_lang", "auto")
 
             # Base64 デコード
@@ -197,25 +189,7 @@ class HybridTranscriberClient:
 
             logger.info(f"🎤 [{username}] {text} (言語: {detected_lang})")
 
-            # 翻訳
-            translated_text = ""
-            translation_skipped = False
-            if self.translator and target_lang:
-                loop = asyncio.get_event_loop()
-                translation_result = await loop.run_in_executor(
-                    None,
-                    lambda: self.translator.translate(
-                        text=text,
-                        target_lang=target_lang,
-                        source_lang=None
-                    )
-                )
-                translated_text = translation_result.get("translated_text", "")
-                translation_skipped = translation_result.get("skipped", False)
-                if translated_text:
-                    logger.info(f"   🌐 -> [{target_lang}] {translated_text}")
-
-            # クラウドへ送信
+            # クラウドへ文字起こし結果のみ送信（翻訳はクラウドが行う）
             await ws.send(json.dumps({
                 "type": "transcription_result",
                 "user_id": user_id,
@@ -223,9 +197,6 @@ class HybridTranscriberClient:
                 "avatar_url": avatar_url,
                 "original_text": text,
                 "detected_language": detected_lang,
-                "translated_text": translated_text,
-                "target_lang": target_lang,
-                "translation_skipped": translation_skipped,
                 "timestamp": datetime.now().strftime("%H:%M:%S")
             }))
 

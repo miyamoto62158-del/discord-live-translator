@@ -106,11 +106,15 @@ client.on("interactionCreate", async (interaction) => {
     // ★重要: ローカルPCクライアント（GPU側）が接続されているかチェック
     if (!voiceHandler.hasActiveClient()) {
       const vramErr = voiceHandler.getLastVramError();
-      let errorMsg = "❌ **文字起こしクライアントが起動していないか、VRAM不足で停止しています。**\n\n";
+      let errorMsg = "⚠️ **GPUクライアントが未接続です。**\n\n";
       if (vramErr) {
-        errorMsg += `🚨 **VRAMエラー内容**: \`${vramErr}\`\n\n`;
+        errorMsg += `🚨 **前回のエラー**: \`${vramErr}\`\n\n`;
       }
-      errorMsg += "Qwen3-ASRによる文字起こしを行うには、VRAMに余裕がある人がローカルクライアントを起動してから、再度 `/join` を実行してください。";
+      errorMsg += "📥 **手順（初回のみ）**\n";
+      errorMsg += "1. GitHubリポジトリからコードをダウンロード\n";
+      errorMsg += "2. `start-client.bat` をダブルクリックして起動\n";
+      errorMsg += "3. 「スタンバイOK」と表示されたら、もう一度 `/join` を実行\n\n";
+      errorMsg += `📊 ダッシュボード: ${DASHBOARD_URL}`;
 
       return interaction.reply({
         content: errorMsg,
