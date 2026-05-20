@@ -1,0 +1,17 @@
+# Discord Bot
+bot/.env
+bot/node_modules/
+
+# Python Transcriber
+transcriber/__pycache__/
+transcriber/.venv/
+transcriber/models/
+
+# Logs & Temporary files
+*.log
+*.tmp
+*.lnk
+
+# OS files
+.DS_Store
+Thumbs.db

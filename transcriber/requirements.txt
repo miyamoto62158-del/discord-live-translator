@@ -1,0 +1,12 @@
+fastapi
+uvicorn
+websockets
+pydantic
+numpy
+python-dotenv
+soundfile
+qwen-asr
+torch
+torchaudio
+deepl
+websockets

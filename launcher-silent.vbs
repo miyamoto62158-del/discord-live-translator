@@ -1,0 +1,3 @@
+Set objShell = CreateObject("WScript.Shell")
+objShell.CurrentDirectory = CreateObject("Scripting.FileSystemObject").GetParentFolderName(WScript.ScriptFullName)
+objShell.Run """C:\Program Files\nodejs\node.exe"" launcher.js", 0, False
