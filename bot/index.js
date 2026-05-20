@@ -20,6 +20,7 @@ const voiceHandler = require("./voiceHandler");
 const DISCORD_TOKEN = process.env.DISCORD_TOKEN;
 const HYBRID_WS_PORT = parseInt(process.env.HYBRID_WS_PORT || "8765", 10);
 const DASHBOARD_PORT = parseInt(process.env.DASHBOARD_PORT || "3000", 10);
+const DASHBOARD_URL = process.env.DASHBOARD_URL || `http://localhost:${DASHBOARD_PORT}`;
 const DEFAULT_TARGET_LANG = process.env.DEFAULT_TARGET_LANG || "JA";
 
 if (!DISCORD_TOKEN || DISCORD_TOKEN === "your-bot-token-here") {
@@ -133,7 +134,7 @@ client.on("interactionCreate", async (interaction) => {
 
       await interaction.editReply(
         `✅ **#${voiceChannel.name}** に参加しました！\n` +
-          `📊 ダッシュボード: http://localhost:${DASHBOARD_PORT}\n` +
+          `📊 ダッシュボード: ${DASHBOARD_URL}\n` +
           `🌐 翻訳先言語: ${DEFAULT_TARGET_LANG}`
       );
     } catch (error) {
@@ -162,7 +163,7 @@ client.on("interactionCreate", async (interaction) => {
     statusText += `ローカルGPUクライアント: ${status.hasClient ? "✅ 接続完了 (準備OK)" : "❌ 未接続 (起動してください)"}\n`;
     statusText += `アクティブストリーム: ${status.activeStreams}\n`;
     statusText += `翻訳先言語: ${status.targetLang}\n`;
-    statusText += `ダッシュボード: http://localhost:${DASHBOARD_PORT}`;
+    statusText += `ダッシュボード: ${DASHBOARD_URL}`;
 
     await interaction.reply({ content: statusText, ephemeral: true });
   }
