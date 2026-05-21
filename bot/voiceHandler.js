@@ -31,8 +31,11 @@ let targetLang = "JA";
 
 // ハイブリッド構成用の状態変数
 let activeWsClient = null; // ローカルPC(Transcriberクライアント)のWebSocket
-let lastVramError = "";    // 直近のVRAMエラーメッセージ
+let lastVramError = "";    // 直近 of VRAMエラーメッセージ
 const connectedDashboards = new Set(); // 接続されているブラウザダッシュボード
+
+// DeepL 使用量キャッシュ
+let cachedUsage = { count: 0, limit: 1000000, percent: "0.0" };
 
 // ダッシュボード用の言語設定
 let dashboardTargetLang = "JA";
@@ -44,8 +47,29 @@ let deeplTranslator = null;
 if (DEEPL_API_KEY && DEEPL_API_KEY !== "your-deepl-api-key-here") {
   deeplTranslator = new deepl.Translator(DEEPL_API_KEY);
   console.log("✅ [DeepL] クラウド側で DeepL 翻訳エンジンを初期化しました");
+  // 起動時に使用状況を取得
+  updateUsageCache();
 } else {
   console.warn("⚠️ [DeepL] DEEPL_API_KEY が未設定です。翻訳はスキップされ、文字起こしのみ行われます。");
+}
+
+/**
+ * DeepL の使用状況をキャッシュに更新する
+ */
+async function updateUsageCache() {
+  if (!deeplTranslator) return;
+  try {
+    const usage = await deeplTranslator.getUsage();
+    if (usage.character) {
+      const count = usage.character.count;
+      const limit = usage.character.limit;
+      const percent = ((count / limit) * 100).toFixed(1);
+      cachedUsage = { count, limit, percent };
+      console.log(`📊 [DeepL Usage] ${count} / ${limit} (${percent}%)`);
+    }
+  } catch (err) {
+    console.error("❌ [DeepL Usage] 取得失敗:", err.message);
+  }
 }
 
 /**
@@ -66,6 +90,8 @@ async function translateWithDeepL(text, targetLang, sourceLang) {
       sourceLang || null,
       tl
     );
+    // 翻訳実行後、使用状況キャッシュをバックグラウンドで更新
+    updateUsageCache().catch(() => {});
     return {
       translated_text: result.text,
       detected_source_lang: result.detectedSourceLang,
@@ -84,11 +110,12 @@ function handleDashboardConnection(ws) {
   connectedDashboards.add(ws);
   console.log("💻 [Dashboard] ダッシュボードが接続しました");
 
-  // 初回接続時に現在の言語設定などを送る
+  // 初回接続時に現在の言語設定とDeepL使用状況を送る
   ws.send(JSON.stringify({
     type: "init",
     targetLang: dashboardTargetLang,
-    detectLang: dashboardDetectLang
+    detectLang: dashboardDetectLang,
+    deeplUsage: cachedUsage
   }));
 
   ws.on("message", (message) => {
@@ -143,6 +170,15 @@ function handleHybridConnection(ws) {
         // 文字起こし結果を受信 → クラウド側でDeepL翻訳 → ダッシュボードへブロードキャスト
         const originalText = data.original_text || "";
         const detectedLang = data.detected_language || "auto";
+
+        // ── 雑音・ハルシネーション（幻聴ノイズ）フィルタ ──
+        const normalized = originalText.toLowerCase().replace(/[.,\/#!$%\^&\*;:{}=\-_`~()?]/g, "").trim();
+        const hallucinationList = ["yeah", "okay", "hmm", "uh", "um", "oh", "ah", "yep", "ding ding ding"];
+        if (hallucinationList.includes(normalized) && normalized.length <= 15) {
+          console.log(`🔇 [Hallucination Filtered] Ignored noise/short feedback: "${originalText}"`);
+          return; // 完全に無視してダッシュボードやDiscord送信を行わない
+        }
+
         console.log(`🎤 [Hybrid] [${data.username}] ${originalText} (${detectedLang})`);
 
         // DeepL翻訳をクラウド側で実行
@@ -163,6 +199,7 @@ function handleHybridConnection(ws) {
           translated_text: tlResult.translated_text,
           target_lang: currentTargetLang,
           translation_skipped: tlResult.translation_skipped,
+          deepl_usage: cachedUsage,
           timestamp: data.timestamp || new Date().toLocaleTimeString("ja-JP")
         });
       }
@@ -357,9 +394,9 @@ async function flushBuffer(userId) {
   stream.lastSendTime = Date.now();
   stream.flushTimer = null;
 
-  // 音声データが小さすぎる場合はスキップ（雑音対策：0.4秒未満は無視）
-  // 48000Hz * 2 bytes * 0.4s = 38400 bytes
-  if (audioBuffer.length < 38400) {
+  // 音声データが短すぎる場合はスキップ（雑音・ハルシネーション対策：0.8秒未満は無視）
+  // 48000Hz * 2 bytes * 0.8s = 76800 bytes
+  if (audioBuffer.length < 76800) {
     return;
   }
 
@@ -410,7 +447,8 @@ function getStatus() {
     connected: currentConnection !== null,
     activeStreams: activeStreams.size,
     targetLang: dashboardTargetLang || targetLang,
-    hasClient: activeWsClient !== null
+    hasClient: activeWsClient !== null,
+    deeplUsage: cachedUsage
   };
 }
 

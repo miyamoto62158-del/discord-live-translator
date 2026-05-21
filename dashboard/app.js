@@ -62,6 +62,7 @@ const elements = {
     targetLang: document.getElementById('target-lang'),
     messageCount: document.getElementById('message-count'),
     lastUpdate: document.getElementById('last-update'),
+    deeplUsage: document.getElementById('deepl-usage'),
     clearBtn: document.getElementById('clear-btn'),
     autoScrollBtn: document.getElementById('auto-scroll-btn'),
 };
@@ -100,9 +101,15 @@ function connect() {
 function handleMessage(data) {
     switch (data.type) {
         case 'init':
+            if (data.deeplUsage) {
+                updateDeepLUsage(data.deeplUsage);
+            }
             break;
         case 'transcription':
             addTranscriptionCard(data);
+            if (data.deepl_usage) {
+                updateDeepLUsage(data.deepl_usage);
+            }
             break;
     }
 }
@@ -185,6 +192,14 @@ function getTranslationHtml(data) {
     return '';
 }
 
+// ── DeepL使用状況の表示更新 ──
+function updateDeepLUsage(usage) {
+    if (elements.deeplUsage && usage) {
+        // X / Y (0.0%) のフォーマットで表示
+        elements.deeplUsage.textContent = `DeepL使用量: ${usage.count.toLocaleString()} / ${usage.limit.toLocaleString()} (${usage.percent}%)`;
+    }
+}
+
 // ── ユーティリティ ──
 function updateConnectionStatus(connected) {
     elements.status.className = `status-badge ${connected ? 'connected' : 'disconnected'}`;
@@ -242,6 +257,10 @@ async function joinVoice() {
             isInVoice = true;
             updateVoiceButtons();
             if (elements.welcome) elements.welcome.style.display = 'none';
+            // もしAPIレスポンスに使用状況が入っていれば更新
+            if (data.deeplUsage) {
+                updateDeepLUsage(data.deeplUsage);
+            }
         } else {
             alert(data.error || '参加に失敗しました');
         }
