@@ -16,7 +16,7 @@ python transcriber\client_transcriber.py
 
 if %ERRORLEVEL% NEQ 0 (
     echo.
-    echo 🚨 [Error] Failed to start transcriber client.
+    echo [Error] Failed to start transcriber client.
     echo Make sure you have at least 5GB free VRAM and NVIDIA CUDA.
     echo.
     pause
