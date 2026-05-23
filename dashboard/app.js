@@ -1,8 +1,8 @@
 /**
  * app.js - ダッシュボードのクライアントサイドスクリプト
  *
- * WebSocketでPython Transcriberサーバーに接続し、
- * リアルタイムの文字起こし・翻訳結果を表示する。
+ * WebSocketでBotサーバーに接続し、
+ * リアルタイムの文字起こし・翻訳結果を表示、各種コントロールを行います。
  */
 
 // ── 設定 ──
@@ -65,6 +65,12 @@ const elements = {
     deeplUsage: document.getElementById('deepl-usage'),
     clearBtn: document.getElementById('clear-btn'),
     autoScrollBtn: document.getElementById('auto-scroll-btn'),
+    
+    // 追加: ASRモデル選択とDeepL APIキー設定
+    modelSelect: document.getElementById('model-select'),
+    vramInfo: document.getElementById('vram-info'),
+    deeplKeyInput: document.getElementById('deepl-key-input'),
+    applyKeyBtn: document.getElementById('apply-key-btn')
 };
 
 // ── WebSocket接続 ──
@@ -75,11 +81,22 @@ function connect() {
     ws.onopen = () => {
         isConnected = true;
         updateConnectionStatus(true);
+        
+        // 初期設定の送信
         if (elements.targetLang) {
             ws.send(JSON.stringify({ type: 'change_language', lang: elements.targetLang.value }));
         }
         if (elements.detectLang) {
             ws.send(JSON.stringify({ type: 'change_detect_lang', lang: elements.detectLang.value }));
+        }
+        
+        // 保存されているDeepL APIキーがあれば自動で送信して適用
+        const savedKey = localStorage.getItem('deepl_api_key');
+        if (savedKey) {
+            ws.send(JSON.stringify({ type: 'set_deepl_key', key: savedKey }));
+            if (elements.deeplKeyInput) {
+                elements.deeplKeyInput.value = savedKey;
+            }
         }
     };
 
@@ -91,6 +108,7 @@ function connect() {
     ws.onclose = () => {
         isConnected = false;
         updateConnectionStatus(false);
+        updateClientStatus(null); // クライアント状態の表示も未接続にする
         setTimeout(connect, RECONNECT_INTERVAL);
     };
 
@@ -104,7 +122,32 @@ function handleMessage(data) {
             if (data.deeplUsage) {
                 updateDeepLUsage(data.deeplUsage);
             }
+            if (data.clientStatus) {
+                updateClientStatus(data.clientStatus);
+            }
             break;
+            
+        case 'client_status_update':
+            updateClientStatus(data.clientStatus);
+            break;
+            
+        case 'model_changed':
+            if (elements.modelSelect) {
+                elements.modelSelect.value = data.current_model;
+                elements.modelSelect.disabled = false; // ロード中によるロックを解除
+            }
+            break;
+            
+        case 'deepl_usage_update':
+            if (data.deeplUsage) {
+                updateDeepLUsage(data.deeplUsage);
+            }
+            break;
+            
+        case 'client_error':
+            alert(`⚠️ 音声認識クライアントエラー:\n${data.error_message}`);
+            break;
+            
         case 'transcription':
             addTranscriptionCard(data);
             if (data.deepl_usage) {
@@ -112,6 +155,68 @@ function handleMessage(data) {
             }
             break;
     }
+}
+
+// ── 音声認識クライアント（GPU/モデル）状態の表示更新 ──
+function updateClientStatus(status) {
+    if (!elements.modelSelect || !elements.vramInfo) return;
+    
+    if (!status || !status.hasClient) {
+        // 文字起こしクライアントが接続されていない場合
+        elements.modelSelect.innerHTML = '<option value="">未接続 (待ち...)</option>';
+        elements.modelSelect.disabled = true;
+        elements.vramInfo.textContent = '(--GB)';
+        return;
+    }
+    
+    // VRAM空き容量の表示更新
+    elements.vramInfo.textContent = `(${status.free_vram_gb.toFixed(1)}GB)`;
+    
+    // 利用可能なモデルドロップダウンの動的再構築
+    elements.modelSelect.innerHTML = '';
+    
+    status.available_models.forEach(model => {
+        const opt = document.createElement('option');
+        opt.value = model.id;
+        opt.textContent = model.name;
+        if (model.id === status.current_model) {
+            opt.selected = true;
+        }
+        elements.modelSelect.appendChild(opt);
+    });
+    
+    elements.modelSelect.disabled = false;
+}
+
+// ── ASRモデル変更 ──
+function onModelChange() {
+    if (!elements.modelSelect) return;
+    const modelId = elements.modelSelect.value;
+    if (!modelId) return;
+    
+    // モデル切り替え完了まで一時的にドロップダウンを無効化
+    elements.modelSelect.disabled = true;
+    
+    if (ws && ws.readyState === WebSocket.OPEN) {
+        ws.send(JSON.stringify({ type: 'change_model', model_id: modelId }));
+        console.log(`🔄 モデル切り替えを要求: ${modelId}`);
+    }
+}
+
+// ── DeepL APIキー適用 ──
+function applyDeepLKey() {
+    if (!elements.deeplKeyInput) return;
+    const key = elements.deeplKeyInput.value.trim();
+    
+    // ローカルブラウザに保存
+    localStorage.setItem('deepl_api_key', key);
+    
+    if (ws && ws.readyState === WebSocket.OPEN) {
+        ws.send(JSON.stringify({ type: 'set_deepl_key', key: key }));
+        console.log("🔑 カスタムDeepL APIキーを適用しました");
+    }
+    
+    alert('DeepL APIキーを保存し、適用しました！');
 }
 
 // ── 発言カードを追加 ──
@@ -172,7 +277,7 @@ function getTranslationHtml(data) {
     if (data.translation_skipped) {
         return `<div class="card-translation skipped">
             <span class="arrow">→</span>
-            <span>(同言語のため翻訳不要)</span>
+            <span>(翻訳不要またはAPIキー未設定)</span>
         </div>`;
     }
     if (data.translated_text) {
@@ -194,7 +299,7 @@ function getTranslationHtml(data) {
 
 // ── DeepL使用状況の表示更新 ──
 function updateDeepLUsage(usage) {
-    if (elements.deeplUsage && usage) {
+    if (elements.deeplUsage && usage && usage.limit > 0) {
         // X / Y (0.0%) のフォーマットで表示
         elements.deeplUsage.textContent = `DeepL使用量: ${usage.count.toLocaleString()} / ${usage.limit.toLocaleString()} (${usage.percent}%)`;
     }
@@ -233,6 +338,7 @@ function onLanguageChange() {
     }
 }
 
+// ── 検出言語変更 ──
 function onDetectLanguageChange() {
     const lang = elements.detectLang.value;
     if (ws && ws.readyState === WebSocket.OPEN) {
@@ -257,7 +363,6 @@ async function joinVoice() {
             isInVoice = true;
             updateVoiceButtons();
             if (elements.welcome) elements.welcome.style.display = 'none';
-            // もしAPIレスポンスに使用状況が入っていれば更新
             if (data.deeplUsage) {
                 updateDeepLUsage(data.deeplUsage);
             }
@@ -295,7 +400,7 @@ function toggleAutoScroll() {
     if (autoScroll) {
         btn.textContent = '📌 自動追従: ON';
         btn.classList.add('active');
-        scrollToTop(); // ON にした瞬間は最新へ移動
+        scrollToTop();
     } else {
         btn.textContent = '📌 自動追従: OFF';
         btn.classList.remove('active');
@@ -313,7 +418,9 @@ document.getElementById('join-btn')?.addEventListener('click', joinVoice);
 document.getElementById('leave-btn')?.addEventListener('click', leaveVoice);
 document.getElementById('join-btn-welcome')?.addEventListener('click', joinVoice);
 
+// 追加イベントリスナー: ASRモデル選択とDeepL APIキー適用
+elements.modelSelect?.addEventListener('change', onModelChange);
+elements.applyKeyBtn?.addEventListener('click', applyDeepLKey);
 
 // ── 起動 ──
 connect();
-

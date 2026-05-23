@@ -9,4 +9,4 @@ qwen-asr
 torch
 torchaudio
 deepl
-websockets
+faster-whisper

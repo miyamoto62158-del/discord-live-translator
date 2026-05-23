@@ -1,9 +1,9 @@
 /**
- * voiceHandler.js - Discord ボイスチャンネルの音声受信・処理 (ハイブリッド対応版)
+ * voiceHandler.js - Discord ボイスチャンネルの音声受信・処理 (マルチモデル・各自DeepL対応版)
  *
  * ユーザー別の音声ストリームを受信し、PCMに変換してバッファリング後、
  * WebSocketを通じて接続されているローカルPCクライアントへ転送する。
- * DeepL翻訳はクラウド側（ここ）で実行する。APIキーはクラウドの.envに一元管理。
+ * DeepL翻訳は、ダッシュボードから提供された各自のAPIキー、またはデフォルトの環境変数キーを使用して実行する。
  */
 
 const deepl = require("deepl-node");
@@ -29,43 +29,80 @@ const knownUsers = new Map(); // userId -> { username, avatarUrl }
 let currentConnection = null;
 let targetLang = "JA";
 
-// ハイブリッド構成用の状態変数
+// ハイブリッド（ローカルクライアント）接続用の状態変数
 let activeWsClient = null; // ローカルPC(Transcriberクライアント)のWebSocket
-let lastVramError = "";    // 直近 of VRAMエラーメッセージ
+let lastVramError = "";    // 直近のVRAMエラーメッセージ
 const connectedDashboards = new Set(); // 接続されているブラウザダッシュボード
 
-// DeepL 使用量キャッシュ
+// クライアント側のモデル・VRAM情報
+let clientFreeVram = 0.0;
+let availableModels = [];
+let currentModel = "";
+
+// DeepL 使用量キャッシュとトランスレーターインスタンス
 let cachedUsage = { count: 0, limit: 1000000, percent: "0.0" };
+const DEEPL_API_KEY = process.env.DEEPL_API_KEY || "";
+let deeplTranslator = null;         // 環境変数によるデフォルト
+let customDeeplTranslator = null;   // ユーザー指定のカスタム
+
+// デフォルト初期化
+if (DEEPL_API_KEY && DEEPL_API_KEY !== "your-deepl-api-key-here") {
+  try {
+    deeplTranslator = new deepl.Translator(DEEPL_API_KEY);
+    console.log("✅ [DeepL] デフォルトの DeepL 翻訳エンジンを初期化しました");
+    updateUsageCache(deeplTranslator);
+  } catch (err) {
+    console.error("❌ [DeepL] デフォルトエンジンの初期化に失敗:", err.message);
+  }
+}
 
 // ダッシュボード用の言語設定
 let dashboardTargetLang = "JA";
 let dashboardDetectLang = "auto";
 
-// ── DeepL 翻訳 (クラウド側で一元管理) ──
-const DEEPL_API_KEY = process.env.DEEPL_API_KEY || "";
-let deeplTranslator = null;
-if (DEEPL_API_KEY && DEEPL_API_KEY !== "your-deepl-api-key-here") {
-  deeplTranslator = new deepl.Translator(DEEPL_API_KEY);
-  console.log("✅ [DeepL] クラウド側で DeepL 翻訳エンジンを初期化しました");
-  // 起動時に使用状況を取得
-  updateUsageCache();
-} else {
-  console.warn("⚠️ [DeepL] DEEPL_API_KEY が未設定です。翻訳はスキップされ、文字起こしのみ行われます。");
+/**
+ * ユーザー指定のカスタムDeepL APIキーで翻訳エンジンを初期化・更新する
+ */
+function updateDeepLKey(key) {
+  if (!key || key.trim() === "") {
+    customDeeplTranslator = null;
+    cachedUsage = { count: 0, limit: 1000000, percent: "0.0" };
+    console.log("ℹ️ [DeepL] カスタムAPIキーがクリアされました。");
+    // 必要ならダッシュボードへ使用量0を通知
+    broadcastToDashboards({ type: "deepl_usage_update", deeplUsage: cachedUsage });
+    return;
+  }
+  
+  try {
+    customDeeplTranslator = new deepl.Translator(key.trim());
+    console.log("✅ [DeepL] ユーザー指定のカスタムAPIキーで翻訳エンジンを初期化しました");
+    updateUsageCache(customDeeplTranslator);
+  } catch (err) {
+    console.error("❌ [DeepL] カスタムAPIキーの初期化に失敗しました:", err.message);
+  }
 }
 
 /**
  * DeepL の使用状況をキャッシュに更新する
  */
-async function updateUsageCache() {
-  if (!deeplTranslator) return;
+async function updateUsageCache(translatorInstance) {
+  const translator = translatorInstance || customDeeplTranslator || deeplTranslator;
+  if (!translator) return;
+  
   try {
-    const usage = await deeplTranslator.getUsage();
+    const usage = await translator.getUsage();
     if (usage.character) {
       const count = usage.character.count;
       const limit = usage.character.limit;
       const percent = ((count / limit) * 100).toFixed(1);
       cachedUsage = { count, limit, percent };
       console.log(`📊 [DeepL Usage] ${count} / ${limit} (${percent}%)`);
+      
+      // 更新された使用状況をダッシュボードへ即時通知
+      broadcastToDashboards({
+        type: "deepl_usage_update",
+        deeplUsage: cachedUsage
+      });
     }
   } catch (err) {
     console.error("❌ [DeepL Usage] 取得失敗:", err.message);
@@ -73,25 +110,33 @@ async function updateUsageCache() {
 }
 
 /**
- * DeepL API でテキストを翻訳する (クラウド側実行)
+ * DeepL API でテキストを翻訳する (動的キー対応)
  */
 async function translateWithDeepL(text, targetLang, sourceLang) {
-  if (!deeplTranslator || !text || !text.trim()) {
+  const activeTranslator = customDeeplTranslator || deeplTranslator;
+  
+  if (!activeTranslator) {
+    return { translated_text: "[翻訳スキップ: DeepL APIキーが設定されていません]", translation_skipped: true };
+  }
+  if (!text || !text.trim()) {
     return { translated_text: "", translation_skipped: true };
   }
+  
   try {
     // 言語コード補正
     let tl = targetLang.toUpperCase();
     if (tl === "EN") tl = "EN-US";
     if (tl === "PT") tl = "PT-BR";
 
-    const result = await deeplTranslator.translateText(
+    const result = await activeTranslator.translateText(
       text,
       sourceLang || null,
       tl
     );
+    
     // 翻訳実行後、使用状況キャッシュをバックグラウンドで更新
-    updateUsageCache().catch(() => {});
+    updateUsageCache(activeTranslator).catch(() => {});
+    
     return {
       translated_text: result.text,
       detected_source_lang: result.detectedSourceLang,
@@ -110,23 +155,44 @@ function handleDashboardConnection(ws) {
   connectedDashboards.add(ws);
   console.log("💻 [Dashboard] ダッシュボードが接続しました");
 
-  // 初回接続時に現在の言語設定とDeepL使用状況を送る
+  // 初回接続時に現在の各種設定とクライアント情報を送る
   ws.send(JSON.stringify({
     type: "init",
     targetLang: dashboardTargetLang,
     detectLang: dashboardDetectLang,
-    deeplUsage: cachedUsage
+    deeplUsage: cachedUsage,
+    clientStatus: {
+      hasClient: activeWsClient !== null,
+      free_vram_gb: clientFreeVram,
+      available_models: availableModels,
+      current_model: currentModel
+    }
   }));
 
   ws.on("message", (message) => {
     try {
       const data = JSON.parse(message.toString());
+      
       if (data.type === "change_language" || data.type === "change_target") {
         dashboardTargetLang = data.lang;
         console.log(`🌍 [Dashboard] 翻訳先言語を変更: ${dashboardTargetLang}`);
       } else if (data.type === "change_detect_lang") {
         dashboardDetectLang = data.lang;
         console.log(`🎤 [Dashboard] 検出言語を変更: ${dashboardDetectLang}`);
+      } else if (data.type === "change_model") {
+        // ASRモデル切り替え要求をローカルクライアントへ中継
+        console.log(`🔄 [Dashboard] ASRモデルの切り替え要求: [${data.model_id}]`);
+        if (activeWsClient && activeWsClient.readyState === 1) {
+          activeWsClient.send(JSON.stringify({
+            type: "change_model",
+            model_id: data.model_id
+          }));
+        } else {
+          console.warn("⚠️ [Dashboard] 接続中のローカルPCクライアントがないため、モデル切り替えを行えません");
+        }
+      } else if (data.type === "set_deepl_key") {
+        console.log("🔑 [Dashboard] カスタムDeepL APIキーがダッシュボードから送信されました");
+        updateDeepLKey(data.key);
       }
     } catch (err) {
       console.error("❌ [Dashboard] メッセージ処理エラー:", err);
@@ -158,13 +224,44 @@ function handleHybridConnection(ws) {
         if (data.vram_status === "ok") {
           activeWsClient = ws;
           lastVramError = "";
-          console.log(`✅ [Hybrid] クライアント登録成功 (空きVRAM: ${data.free_vram_gb.toFixed(2)} GB)`);
+          clientFreeVram = data.free_vram_gb || 0.0;
+          availableModels = data.available_models || [];
+          currentModel = data.current_model || "";
+          
+          console.log(`✅ [Hybrid] クライアント登録成功 (空きVRAM: ${clientFreeVram.toFixed(2)} GB, 現在のモデル: ${currentModel})`);
+          
+          // 新しいクライアント状態をすべてのダッシュボードに通知
+          broadcastToDashboards({
+            type: "client_status_update",
+            clientStatus: {
+              hasClient: true,
+              free_vram_gb: clientFreeVram,
+              available_models: availableModels,
+              current_model: currentModel
+            }
+          });
         } else {
           lastVramError = data.error_message || "不明なVRAMエラー";
-          console.error(`🚨 [Hybrid] クライアント登録失敗 (VRAM不足): ${lastVramError}`);
+          console.error(`🚨 [Hybrid] クライアント登録失敗 (起動エラー): ${lastVramError}`);
+          
+          broadcastToDashboards({
+            type: "client_error",
+            error_message: lastVramError
+          });
           ws.close();
         }
       } 
+      
+      else if (data.type === "model_changed_status") {
+        currentModel = data.current_model || "";
+        console.log(`✨ [Hybrid] ASRモデルが正常に切り替えられました: [${currentModel}]`);
+        
+        // ダッシュボードへ現在のモデル更新を通知
+        broadcastToDashboards({
+          type: "model_changed",
+          current_model: currentModel
+        });
+      }
       
       else if (data.type === "transcription_result") {
         // 文字起こし結果を受信 → クラウド側でDeepL翻訳 → ダッシュボードへブロードキャスト
@@ -176,12 +273,12 @@ function handleHybridConnection(ws) {
         const hallucinationList = ["yeah", "okay", "hmm", "uh", "um", "oh", "ah", "yep", "ding ding ding"];
         if (hallucinationList.includes(normalized) && normalized.length <= 15) {
           console.log(`🔇 [Hallucination Filtered] Ignored noise/short feedback: "${originalText}"`);
-          return; // 完全に無視してダッシュボードやDiscord送信を行わない
+          return; // 完全に無視して配信を行わない
         }
 
         console.log(`🎤 [Hybrid] [${data.username}] ${originalText} (${detectedLang})`);
 
-        // DeepL翻訳をクラウド側で実行
+        // DeepL翻訳を実行
         const currentTargetLang = dashboardTargetLang || targetLang;
         const tlResult = await translateWithDeepL(originalText, currentTargetLang, null);
 
@@ -212,6 +309,20 @@ function handleHybridConnection(ws) {
     console.log("🔌 [Hybrid] ローカルPCクライアントが切断されました。");
     if (activeWsClient === ws) {
       activeWsClient = null;
+      clientFreeVram = 0.0;
+      availableModels = [];
+      currentModel = "";
+      
+      // ダッシュボードへクライアント切断を通知
+      broadcastToDashboards({
+        type: "client_status_update",
+        clientStatus: {
+          hasClient: false,
+          free_vram_gb: 0.0,
+          available_models: [],
+          current_model: ""
+        }
+      });
     }
   });
 
@@ -395,7 +506,6 @@ async function flushBuffer(userId) {
   stream.flushTimer = null;
 
   // 音声データが短すぎる場合はスキップ（雑音・ハルシネーション対策：0.8秒未満は無視）
-  // 48000Hz * 2 bytes * 0.8s = 76800 bytes
   if (audioBuffer.length < 76800) {
     return;
   }
@@ -448,7 +558,12 @@ function getStatus() {
     activeStreams: activeStreams.size,
     targetLang: dashboardTargetLang || targetLang,
     hasClient: activeWsClient !== null,
-    deeplUsage: cachedUsage
+    deeplUsage: cachedUsage,
+    clientStatus: {
+      free_vram_gb: clientFreeVram,
+      available_models: availableModels,
+      current_model: currentModel
+    }
   };
 }
 
