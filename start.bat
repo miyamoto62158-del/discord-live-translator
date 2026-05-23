@@ -1,41 +1,38 @@
 @echo off
 chcp 65001 > NUL
-title Discord Live Translator
+title Discord Live Translator - Launcher
 
 :: Set paths
 set PATH=C:\Program Files\nodejs;%PATH%
 set "NVIDIA_PATH=C:\Users\miyam\AppData\Local\Programs\Python\Python310\lib\site-packages\nvidia"
 set PATH=%NVIDIA_PATH%\cublas\bin;%NVIDIA_PATH%\cudnn\bin;%NVIDIA_PATH%\cuda_nvrtc\bin;%PATH%
 
-:: Load .env variables (DISCORD_TOKEN, GEMINI_API_KEY, etc.)
-for /f "usebackq tokens=1,* delims==" %%a in ("bot\.env") do (
-    set "%%a=%%b"
-)
-
-echo ============================================
-echo   Discord Live Translator - Starting...
-echo ============================================
+echo ============================================================
+echo   Discord Live Translator - 一括起動ランチャー
+echo ============================================================
 echo.
 
-echo [1/3] Starting Python Transcriber Server...
-start "Transcriber Server" cmd /k "cd /d %~dp0transcriber && python server.py"
+echo [1/3] Discord Bot & Webサーバーを起動しています...
+start "Discord Live Translator - Bot" cmd /k "cd /d %~dp0bot && node index.js"
 
-echo       Waiting for model load...
-timeout /t 10 /nobreak > nul
+echo.
+echo [2/3] GPU文字起こしクライアントを起動しています...
+start "Discord Live Translator - Transcriber" cmd /k "cd /d %~dp0 && python transcriber\client_transcriber.py"
 
-echo [2/3] Starting Discord Bot...
-start "Discord Bot" cmd /k "cd /d %~dp0bot && node index.js"
+echo.
+echo       システムの準備が整うのを待っています (5秒)...
+timeout /t 5 /nobreak > nul
 
-timeout /t 3 /nobreak > nul
-
-echo [3/3] Opening Dashboard...
+echo.
+echo [3/3] ブラウザダッシュボードを開いています...
 start http://localhost:3000
 
 echo.
-echo ============================================
-echo   All started! Dashboard: http://localhost:3000
-echo ============================================
-echo   Close this window anytime.
-echo   (Bot and Transcriber will keep running)
+echo ============================================================
+echo   起動処理が完了しました！
+echo   ダッシュボード: http://localhost:3000
+echo ============================================================
+echo   この起動ランチャー窓は閉じて構いません。
+echo   (BotとTranscriberはそれぞれの別窓で動き続けます)
 echo.
 pause
