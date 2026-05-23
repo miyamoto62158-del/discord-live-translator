@@ -15,6 +15,7 @@ let ws = null;
 let messageCount = 0;
 let isConnected = false;
 let autoScroll = true;  // 自動追従フラグ
+let cachedClientStatus = null; // キャッシュされたクライアント情報
 
 const userColors = {};
 const colorPalette = [
@@ -66,7 +67,7 @@ const elements = {
     clearBtn: document.getElementById('clear-btn'),
     autoScrollBtn: document.getElementById('auto-scroll-btn'),
     
-    // 追加: ASRモデル選択とDeepL APIキー設定
+    // ASRモデル選択とDeepL APIキー設定
     modelSelect: document.getElementById('model-select'),
     vramInfo: document.getElementById('vram-info'),
     deeplKeyInput: document.getElementById('deepl-key-input'),
@@ -109,6 +110,7 @@ function connect() {
         isConnected = false;
         updateConnectionStatus(false);
         updateClientStatus(null); // クライアント状態の表示も未接続にする
+        updateVoiceStatus(false); // 音声接続状態も解除
         setTimeout(connect, RECONNECT_INTERVAL);
     };
 
@@ -125,17 +127,40 @@ function handleMessage(data) {
             if (data.clientStatus) {
                 updateClientStatus(data.clientStatus);
             }
+            updateVoiceStatus(data.connected);
             break;
             
         case 'client_status_update':
             updateClientStatus(data.clientStatus);
             break;
             
+        case 'model_loading':
+            if (elements.modelSelect) {
+                elements.modelSelect.disabled = true;
+                const modelNames = {
+                    "qwen3": "Qwen3-ASR-1.7B",
+                    "whisper_large": "Whisper Large-v3",
+                    "whisper_medium": "Whisper Medium",
+                    "whisper_small": "Whisper Small"
+                };
+                const mName = modelNames[data.model_id] || data.model_id;
+                elements.modelSelect.innerHTML = `<option value="">⏳ ${mName} をロード中...</option>`;
+            }
+            break;
+            
         case 'model_changed':
             if (elements.modelSelect) {
-                elements.modelSelect.value = data.current_model;
-                elements.modelSelect.disabled = false; // ロード中によるロックを解除
+                elements.modelSelect.disabled = false;
+                // クライアント側から自動でクライアントステータスの更新パケットが来るが、念のため待機表示をクリア
+                if (cachedClientStatus) {
+                    cachedClientStatus.current_model = data.current_model;
+                    updateClientStatus(cachedClientStatus);
+                }
             }
+            break;
+            
+        case 'voice_status':
+            updateVoiceStatus(data.connected, data.channelName);
             break;
             
         case 'deepl_usage_update':
@@ -159,6 +184,7 @@ function handleMessage(data) {
 
 // ── 音声認識クライアント（GPU/モデル）状態の表示更新 ──
 function updateClientStatus(status) {
+    cachedClientStatus = status;
     if (!elements.modelSelect || !elements.vramInfo) return;
     
     if (!status || !status.hasClient) {
@@ -186,6 +212,28 @@ function updateClientStatus(status) {
     });
     
     elements.modelSelect.disabled = false;
+}
+
+// ── BotのVoice接続状態の表示更新 ──
+function updateVoiceStatus(connected, channelName) {
+    isInVoice = connected;
+    updateVoiceButtons();
+    
+    if (elements.welcome) {
+        if (connected) {
+            elements.welcome.style.display = 'none';
+        } else {
+            // 発言履歴が空のときのみウェルカム画面を表示する
+            const cards = elements.container.querySelectorAll('.transcript-card');
+            if (cards.length === 0) {
+                elements.welcome.style.display = 'flex';
+            }
+        }
+    }
+    
+    if (connected && channelName) {
+        console.log(`🎙️ Botがボイスチャンネルに参加しました: #${channelName}`);
+    }
 }
 
 // ── ASRモデル変更 ──
@@ -327,7 +375,7 @@ function clearTranscripts() {
     messageCount = 0;
     elements.messageCount.textContent = '0 件の発言';
     elements.lastUpdate.textContent = '最終更新: --:--:--';
-    if (elements.welcome) elements.welcome.style.display = 'flex';
+    if (!isInVoice && elements.welcome) elements.welcome.style.display = 'flex';
 }
 
 // ── 言語変更 ──
@@ -349,34 +397,6 @@ function onDetectLanguageChange() {
 // ── ボイスチャンネル操作 ──
 let isInVoice = false;
 
-async function joinVoice() {
-    const joinBtn = document.getElementById('join-btn');
-    const joinBtnWelcome = document.getElementById('join-btn-welcome');
-
-    if (joinBtn) { joinBtn.disabled = true; joinBtn.textContent = '⏳ 接続中...'; }
-    if (joinBtnWelcome) { joinBtnWelcome.disabled = true; joinBtnWelcome.textContent = '⏳ 接続中...'; }
-
-    try {
-        const res = await fetch('/api/join', { method: 'POST' });
-        const data = await res.json();
-        if (data.ok) {
-            isInVoice = true;
-            updateVoiceButtons();
-            if (elements.welcome) elements.welcome.style.display = 'none';
-            if (data.deeplUsage) {
-                updateDeepLUsage(data.deeplUsage);
-            }
-        } else {
-            alert(data.error || '参加に失敗しました');
-        }
-    } catch (e) {
-        alert('Botに接続できません。start.batが起動しているか確認してください。');
-    }
-
-    if (joinBtn) { joinBtn.disabled = false; joinBtn.textContent = '🎙️ 参加'; }
-    if (joinBtnWelcome) { joinBtnWelcome.disabled = false; joinBtnWelcome.textContent = '🎙️ Botを参加させる'; }
-}
-
 async function leaveVoice() {
     try {
         await fetch('/api/leave', { method: 'POST' });
@@ -386,9 +406,7 @@ async function leaveVoice() {
 }
 
 function updateVoiceButtons() {
-    const joinBtn = document.getElementById('join-btn');
     const leaveBtn = document.getElementById('leave-btn');
-    if (joinBtn) joinBtn.style.display = isInVoice ? 'none' : 'inline-flex';
     if (leaveBtn) leaveBtn.style.display = isInVoice ? 'inline-flex' : 'none';
 }
 
@@ -414,11 +432,9 @@ if (elements.detectLang) {
     elements.detectLang.addEventListener('change', onDetectLanguageChange);
 }
 elements.autoScrollBtn.addEventListener('click', toggleAutoScroll);
-document.getElementById('join-btn')?.addEventListener('click', joinVoice);
 document.getElementById('leave-btn')?.addEventListener('click', leaveVoice);
-document.getElementById('join-btn-welcome')?.addEventListener('click', joinVoice);
 
-// 追加イベントリスナー: ASRモデル選択とDeepL APIキー適用
+// ASRモデル選択とDeepL APIキー適用
 elements.modelSelect?.addEventListener('change', onModelChange);
 elements.applyKeyBtn?.addEventListener('click', applyDeepLKey);
 

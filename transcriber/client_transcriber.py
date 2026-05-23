@@ -56,10 +56,10 @@ CLOUD_BOT_WS_URL = os.environ.get("CLOUD_BOT_WS_URL", "ws://localhost:3000/hybri
 
 # ── 音声認識モデルリスト ──
 ALL_MODELS = [
-    {"id": "qwen3", "name": "Qwen3-ASR-1.7B (最高精度・推奨)", "req_vram": 5.0},
-    {"id": "whisper_large", "name": "Whisper Large-v3 (高品質)", "req_vram": 3.0},
-    {"id": "whisper_medium", "name": "Whisper Medium (中品質)", "req_vram": 1.5},
-    {"id": "whisper_small", "name": "Whisper Small (軽量・省メモリ)", "req_vram": 0.8},
+    {"id": "qwen3", "name": "Qwen3-ASR-1.7B (必要VRAM: 5.0GB・推奨)", "req_vram": 5.0},
+    {"id": "whisper_large", "name": "Whisper Large-v3 (必要VRAM: 3.0GB)", "req_vram": 3.0},
+    {"id": "whisper_medium", "name": "Whisper Medium (必要VRAM: 1.5GB)", "req_vram": 1.5},
+    {"id": "whisper_small", "name": "Whisper Small (必要VRAM: 0.8GB)", "req_vram": 0.8},
 ]
 
 # ── VRAMチェック ＆ モデル自動選択 ──
@@ -246,6 +246,12 @@ class HybridTranscriberClient:
         logger.info(f"🔄 モデル切り替えの要求を受信しました: [{new_model_id}]")
         
         try:
+            # 1. ロード開始のステータスをBotサーバー経由でブロードキャスト
+            await ws.send(json.dumps({
+                "type": "model_loading_status",
+                "model_id": new_model_id
+            }))
+            
             # 実行中の文字起こしと衝突しないよう、Lockを取得して切り替えを行う
             async with self.transcribe_lock:
                 loop = asyncio.get_event_loop()

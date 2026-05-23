@@ -137,3 +137,98 @@ node index.js
 ### 「翻訳されない」
 - `bot/.env` の `DEEPL_API_KEY` が正しいか確認
 - DeepL APIの月間上限を確認
+
+---
+
+## 🛠️ ASR音声認識モデルの追加・交換手順
+
+将来、QwenやWhisperのより優れた新しいモデルがリリースされた際、または独自の軽量モデルを追加したい場合は、以下の手順で簡単に追加・交換が可能です。
+
+### 1. 必要VRAM（GPUメモリ）の目安
+モデルのパラメータサイズに応じて、必要となる空きVRAM容量は以下のようになります。
+* **1.5B 〜 2.0Bクラスモデル** (例: `Qwen3-ASR`): **約 5.0 GB**
+* **Whisper Largeクラス** (例: `Whisper Large-v3`): **約 3.0 〜 3.5 GB**
+* **Whisper Mediumクラス**: **約 1.5 〜 2.0 GB**
+* **Whisper Smallクラス**: **約 0.8 〜 1.0 GB**
+* **Whisper Tiny / Baseクラス**: **約 0.3 〜 0.5 GB**
+
+### 2. モデルリストへの登録
+`transcriber/client_transcriber.py` の `ALL_MODELS` 配列を編集し、新しいモデルの情報を登録します（必要VRAM容量とダッシュボード上の表示名を設定します）。
+
+```python
+# transcriber/client_transcriber.py
+ALL_MODELS = [
+    {"id": "new_model_id", "name": "新しいモデル名 (必要VRAM: X.XGB)", "req_vram": X.X},
+    ...
+]
+```
+
+### 3. モデルロードマッピングの設定
+`transcriber/asr_engine.py` 内の `self.model_mapping` 配列に、Hugging Face上のモデルリポジトリIDまたはモデル名を設定します。
+
+```python
+# transcriber/asr_engine.py
+self.model_mapping = {
+    "new_model_id": "HuggingFace上のID (例: Qwen/Qwen3-ASR-1.7B または large-v3)",
+    ...
+}
+```
+
+* **Whisperモデルの場合**: `WhisperModel("モデル名", ...)` が自動でHugging Faceからモデルをダウンロードします。
+* **Qwenモデルなどの別アーキテクチャの場合**: `load_model` メソッド内で `self.model_id == "new_model_id"` 用のロードコード（インポート等）を追加します。
+
+---
+
+## 🌍 音声検出言語の追加手順
+
+新しく対応言語（例：ベトナム語やタイ語など）をダッシュボードに追加したい場合は、以下の3ファイルを変更します。
+
+### 1. ダッシュボードUIへの選択肢の追加 (`dashboard/index.html`)
+ヘッダーの「音声言語」セレクタ内に、新しい言語の `<option>` を追加します。
+
+```html
+<!-- dashboard/index.html -->
+<select id="detect-lang">
+    ...
+    <option value="vi">🇻🇳 ベトナム語</option>  <!-- 追加 -->
+</select>
+```
+
+### 2. ASRエンジンへの言語マッピングの追加 (`transcriber/asr_engine.py`)
+モデルが解釈できる言語コードとの紐付けを行います。
+
+```python
+# transcriber/asr_engine.py
+lang_map = {
+    "auto": None,
+    "ja": "ja",
+    "vi": "vi",  # 追加 (Helsinki-NLPやFaster-Whisperで使われるコード)
+    ...
+}
+
+# Qwen3-ASRを使用する場合の英語フルネームマッピング
+qwen_lang_map = {
+    "ja": "Japanese",
+    "vi": "Vietnamese",  # 追加
+    ...
+}
+```
+
+### 3. ダッシュボードの表示絵文字と名前の設定 (`dashboard/app.js`)
+発言カードに表示される国旗絵文字と、言語名を設定します。
+
+```javascript
+// dashboard/app.js
+const langFlags = {
+    'ja': '🇯🇵',
+    'vi': '🇻🇳', // 追加
+    ...
+};
+
+const langNames = {
+    'ja': '日本語',
+    'vi': 'Tiếng Việt', // 追加
+    ...
+};
+```
+

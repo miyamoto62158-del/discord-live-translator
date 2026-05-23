@@ -23,7 +23,6 @@
                 <span class="status-text">切断中</span>
             </div>
             <div class="voice-controls">
-                <button id="join-btn" class="btn-join" title="Botをボイスチャンネルに参加させる">🎙️ 参加</button>
                 <button id="leave-btn" class="btn-leave" title="Botをボイスチャンネルから退出させる" style="display:none">👋 退出</button>
             </div>
         </div>
@@ -78,9 +77,9 @@
         <div id="welcome-message" class="welcome">
             <div class="welcome-icon">🎙️</div>
             <h2>準備完了！</h2>
-            <p>下のボタンをクリックして、Botをボイスチャンネルに参加させてください。</p>
-            <button id="join-btn-welcome" class="btn-join-large">🎙️ Botを参加させる</button>
-            <p class="welcome-note">※ 先にDiscordのボイスチャンネルに入っておいてください</p>
+            <p>Discord上でボイスチャンネルに参加し、チャット欄で以下のコマンドを実行してください。</p>
+            <div style="background: rgba(88, 101, 242, 0.1); border: 1px dashed var(--accent-blue); padding: 12px 30px; border-radius: var(--radius-md); font-family: monospace; font-size: 1.5rem; color: var(--text-accent); margin: 15px 0; font-weight: 700; letter-spacing: 1px; display: inline-block;">/join</div>
+            <p class="welcome-note">※ Botが接続されると、この画面は自動的に会話ログ画面へ切り替わります</p>
 
             <div class="command-help">
                 <h3>📋 コマンド一覧</h3>

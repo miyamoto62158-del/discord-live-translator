@@ -161,6 +161,7 @@ function handleDashboardConnection(ws) {
     targetLang: dashboardTargetLang,
     detectLang: dashboardDetectLang,
     deeplUsage: cachedUsage,
+    connected: currentConnection !== null,
     clientStatus: {
       hasClient: activeWsClient !== null,
       free_vram_gb: clientFreeVram,
@@ -251,6 +252,17 @@ function handleHybridConnection(ws) {
           ws.close();
         }
       } 
+      
+      else if (data.type === "model_loading_status") {
+        const loadingModel = data.model_id || "";
+        console.log(`⏳ [Hybrid] クライアントがモデルをロード中: [${loadingModel}]`);
+        
+        // ダッシュボードへモデルロード中を通知
+        broadcastToDashboards({
+          type: "model_loading",
+          model_id: loadingModel
+        });
+      }
       
       else if (data.type === "model_changed_status") {
         currentModel = data.current_model || "";
@@ -413,6 +425,13 @@ async function joinChannel(channel, _transcriberUrl, _targetLang) {
     }
   });
 
+  // ダッシュボードへBotがボイスチャンネルに参加したことを通知
+  broadcastToDashboards({
+    type: "voice_status",
+    connected: true,
+    channelName: channel.name
+  });
+
   return connection;
 }
 
@@ -430,6 +449,12 @@ function leaveChannel() {
     currentConnection = null;
     console.log("👋 ボイスチャンネルから退出しました");
   }
+
+  // ダッシュボードへBotがボイスチャンネルから退出したことを通知
+  broadcastToDashboards({
+    type: "voice_status",
+    connected: false
+  });
 }
 
 /**
