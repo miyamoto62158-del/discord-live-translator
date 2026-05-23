@@ -251,6 +251,7 @@ class HybridTranscriberClient:
                 "type": "model_loading_status",
                 "model_id": new_model_id
             }))
+            await asyncio.sleep(0.3) # ダッシュボード側がロード中表示を完了する時間を確保
             
             # 実行中の文字起こしと衝突しないよう、Lockを取得して切り替えを行う
             async with self.transcribe_lock:

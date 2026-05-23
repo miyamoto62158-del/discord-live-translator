@@ -3,6 +3,7 @@
  *
  * WebSocketでBotサーバーに接続し、
  * リアルタイムの文字起こし・翻訳結果を表示、各種コントロールを行います。
+ * すべてのドロップダウンはブラウザの自動翻訳機能（Google翻訳等）に対応しています。
  */
 
 // ── 設定 ──
@@ -16,6 +17,7 @@ let messageCount = 0;
 let isConnected = false;
 let autoScroll = true;  // 自動追従フラグ
 let cachedClientStatus = null; // キャッシュされたクライアント情報
+let isModelLoading = false;    // ASRモデルロード中フラグ
 
 const userColors = {};
 const colorPalette = [
@@ -59,17 +61,27 @@ const elements = {
     welcome: document.getElementById('welcome-message'),
     status: document.getElementById('connection-status'),
     statusText: document.querySelector('.status-text'),
-    detectLang: document.getElementById('detect-lang'),
-    targetLang: document.getElementById('target-lang'),
     messageCount: document.getElementById('message-count'),
     lastUpdate: document.getElementById('last-update'),
     deeplUsage: document.getElementById('deepl-usage'),
     clearBtn: document.getElementById('clear-btn'),
     autoScrollBtn: document.getElementById('auto-scroll-btn'),
     
-    // ASRモデル選択とDeepL APIキー設定
-    modelSelect: document.getElementById('model-select'),
+    // カスタムセレクトボックス要素 (ブラウザ自動翻訳対応)
+    modelSelectWrapper: document.getElementById('model-select-wrapper'),
+    modelSelectText: document.getElementById('model-select-text'),
+    modelOptions: document.getElementById('model-options'),
     vramInfo: document.getElementById('vram-info'),
+    
+    detectLangWrapper: document.getElementById('detect-lang-wrapper'),
+    detectLangText: document.getElementById('detect-lang-text'),
+    detectLangOptions: document.getElementById('detect-lang-options'),
+    
+    targetLangWrapper: document.getElementById('target-lang-wrapper'),
+    targetLangText: document.getElementById('target-lang-text'),
+    targetLangOptions: document.getElementById('target-lang-options'),
+    
+    // DeepL設定
     deeplKeyInput: document.getElementById('deepl-key-input'),
     applyKeyBtn: document.getElementById('apply-key-btn')
 };
@@ -83,15 +95,14 @@ function connect() {
         isConnected = true;
         updateConnectionStatus(true);
         
-        // 初期設定の送信
-        if (elements.targetLang) {
-            ws.send(JSON.stringify({ type: 'change_language', lang: elements.targetLang.value }));
-        }
-        if (elements.detectLang) {
-            ws.send(JSON.stringify({ type: 'change_detect_lang', lang: elements.detectLang.value }));
-        }
+        // 初期カスタムセレクトの選択状態を送信
+        const activeTarget = elements.targetLangOptions.querySelector('.custom-option.selected')?.getAttribute('data-value') || 'JA';
+        const activeDetect = elements.detectLangOptions.querySelector('.custom-option.selected')?.getAttribute('data-value') || 'auto';
         
-        // 保存されているDeepL APIキーがあれば自動で送信して適用
+        ws.send(JSON.stringify({ type: 'change_language', lang: activeTarget }));
+        ws.send(JSON.stringify({ type: 'change_detect_lang', lang: activeDetect }));
+        
+        // 保存されているDeepL APIキーがあれば自動適用
         const savedKey = localStorage.getItem('deepl_api_key');
         if (savedKey) {
             ws.send(JSON.stringify({ type: 'set_deepl_key', key: savedKey }));
@@ -108,8 +119,9 @@ function connect() {
 
     ws.onclose = () => {
         isConnected = false;
+        isModelLoading = false;
         updateConnectionStatus(false);
-        updateClientStatus(null); // クライアント状態の表示も未接続にする
+        updateClientStatus(null); // クライアント状態を未接続にする
         updateVoiceStatus(false); // 音声接続状態も解除
         setTimeout(connect, RECONNECT_INTERVAL);
     };
@@ -135,28 +147,39 @@ function handleMessage(data) {
             break;
             
         case 'model_loading':
-            if (elements.modelSelect) {
-                elements.modelSelect.disabled = true;
-                const modelNames = {
-                    "qwen3": "Qwen3-ASR-1.7B",
-                    "whisper_large": "Whisper Large-v3",
-                    "whisper_medium": "Whisper Medium",
-                    "whisper_small": "Whisper Small"
-                };
-                const mName = modelNames[data.model_id] || data.model_id;
-                elements.modelSelect.innerHTML = `<option value="">⏳ ${mName} をロード中...</option>`;
+            // 1. モデルロード中のフラグをセット
+            isModelLoading = true;
+            if (elements.modelSelectWrapper) {
+                elements.modelSelectWrapper.classList.add('disabled');
             }
+            
+            // 2. 表示を「⏳ ロード中」に変更してフリーズ
+            const modelNames = {
+                "qwen3": "Qwen3-ASR-1.7B",
+                "whisper_large": "Whisper Large-v3",
+                "whisper_medium": "Whisper Medium",
+                "whisper_small": "Whisper Small"
+            };
+            const mName = modelNames[data.model_id] || data.model_id;
+            if (elements.modelSelectText) {
+                elements.modelSelectText.textContent = `⏳ ${mName} をロード中...`;
+            }
+            console.log(`⏳ ASRモデルロード中表示に切り替えました: [${mName}]`);
             break;
             
         case 'model_changed':
-            if (elements.modelSelect) {
-                elements.modelSelect.disabled = false;
-                // クライアント側から自動でクライアントステータスの更新パケットが来るが、念のため待機表示をクリア
-                if (cachedClientStatus) {
-                    cachedClientStatus.current_model = data.current_model;
-                    updateClientStatus(cachedClientStatus);
-                }
+            // 1. ロードが完了したため、ガードを解除
+            isModelLoading = false;
+            if (elements.modelSelectWrapper) {
+                elements.modelSelectWrapper.classList.remove('disabled');
             }
+            
+            // 2. クライアントキャッシュの現在のアクティブモデルIDを更新して画面再構築
+            if (cachedClientStatus) {
+                cachedClientStatus.current_model = data.current_model;
+                updateClientStatus(cachedClientStatus);
+            }
+            console.log(`✨ ASRモデルロード完了表示に切り替えました: [${data.current_model}]`);
             break;
             
         case 'voice_status':
@@ -184,34 +207,79 @@ function handleMessage(data) {
 
 // ── 音声認識クライアント（GPU/モデル）状態の表示更新 ──
 function updateClientStatus(status) {
+    // モデルロード中の場合は、他のステータスパケットによる画面書き換え（上書き）を完全にシャットアウト
+    if (isModelLoading) {
+        console.log("⏳ ロード中ロック中のため、ステータス自動更新をスキップします");
+        return;
+    }
+
     cachedClientStatus = status;
-    if (!elements.modelSelect || !elements.vramInfo) return;
+    if (!elements.modelSelectWrapper || !elements.vramInfo || !elements.modelOptions) return;
     
     if (!status || !status.hasClient) {
         // 文字起こしクライアントが接続されていない場合
-        elements.modelSelect.innerHTML = '<option value="">未接続 (待ち...)</option>';
-        elements.modelSelect.disabled = true;
+        elements.modelSelectText.textContent = '未接続 (待ち...)';
+        elements.modelSelectWrapper.classList.add('disabled');
         elements.vramInfo.textContent = '(--GB)';
+        elements.modelOptions.innerHTML = '';
         return;
     }
     
     // VRAM空き容量の表示更新
     elements.vramInfo.textContent = `(${status.free_vram_gb.toFixed(1)}GB)`;
+    elements.modelSelectWrapper.classList.remove('disabled');
     
     // 利用可能なモデルドロップダウンの動的再構築
-    elements.modelSelect.innerHTML = '';
+    elements.modelOptions.innerHTML = '';
+    let activeModelName = '接続待ち...';
     
     status.available_models.forEach(model => {
-        const opt = document.createElement('option');
-        opt.value = model.id;
+        const isCurrent = model.id === status.current_model;
+        const opt = document.createElement('div');
+        opt.className = `custom-option${isCurrent ? ' selected' : ''}`;
+        opt.setAttribute('data-value', model.id);
         opt.textContent = model.name;
-        if (model.id === status.current_model) {
-            opt.selected = true;
+        
+        if (isCurrent) {
+            activeModelName = model.name;
         }
-        elements.modelSelect.appendChild(opt);
+        
+        // クリックイベントの登録
+        opt.addEventListener('click', () => {
+            onModelChange(model.id);
+        });
+        
+        elements.modelOptions.appendChild(opt);
     });
     
-    elements.modelSelect.disabled = false;
+    elements.modelSelectText.textContent = activeModelName;
+}
+
+// ── ASRモデル変更 ──
+function onModelChange(modelId) {
+    if (!modelId) return;
+    
+    // モデル切り替え処理が走るため、ロード中状態を先行適用
+    isModelLoading = true;
+    if (elements.modelSelectWrapper) {
+        elements.modelSelectWrapper.classList.add('disabled');
+    }
+    
+    const modelNames = {
+        "qwen3": "Qwen3-ASR-1.7B",
+        "whisper_large": "Whisper Large-v3",
+        "whisper_medium": "Whisper Medium",
+        "whisper_small": "Whisper Small"
+    };
+    const mName = modelNames[modelId] || modelId;
+    if (elements.modelSelectText) {
+        elements.modelSelectText.textContent = `⏳ ${mName} をロード中...`;
+    }
+    
+    if (ws && ws.readyState === WebSocket.OPEN) {
+        ws.send(JSON.stringify({ type: 'change_model', model_id: modelId }));
+        console.log(`🔄 モデル切り替えを要求: ${modelId}`);
+    }
 }
 
 // ── BotのVoice接続状態の表示更新 ──
@@ -233,21 +301,6 @@ function updateVoiceStatus(connected, channelName) {
     
     if (connected && channelName) {
         console.log(`🎙️ Botがボイスチャンネルに参加しました: #${channelName}`);
-    }
-}
-
-// ── ASRモデル変更 ──
-function onModelChange() {
-    if (!elements.modelSelect) return;
-    const modelId = elements.modelSelect.value;
-    if (!modelId) return;
-    
-    // モデル切り替え完了まで一時的にドロップダウンを無効化
-    elements.modelSelect.disabled = true;
-    
-    if (ws && ws.readyState === WebSocket.OPEN) {
-        ws.send(JSON.stringify({ type: 'change_model', model_id: modelId }));
-        console.log(`🔄 モデル切り替えを要求: ${modelId}`);
     }
 }
 
@@ -348,7 +401,6 @@ function getTranslationHtml(data) {
 // ── DeepL使用状況の表示更新 ──
 function updateDeepLUsage(usage) {
     if (elements.deeplUsage && usage && usage.limit > 0) {
-        // X / Y (0.0%) のフォーマットで表示
         elements.deeplUsage.textContent = `DeepL使用量: ${usage.count.toLocaleString()} / ${usage.limit.toLocaleString()} (${usage.percent}%)`;
     }
 }
@@ -376,22 +428,6 @@ function clearTranscripts() {
     elements.messageCount.textContent = '0 件の発言';
     elements.lastUpdate.textContent = '最終更新: --:--:--';
     if (!isInVoice && elements.welcome) elements.welcome.style.display = 'flex';
-}
-
-// ── 言語変更 ──
-function onLanguageChange() {
-    const lang = elements.targetLang.value;
-    if (ws && ws.readyState === WebSocket.OPEN) {
-        ws.send(JSON.stringify({ type: 'change_language', lang }));
-    }
-}
-
-// ── 検出言語変更 ──
-function onDetectLanguageChange() {
-    const lang = elements.detectLang.value;
-    if (ws && ws.readyState === WebSocket.OPEN) {
-        ws.send(JSON.stringify({ type: 'change_detect_lang', lang }));
-    }
 }
 
 // ── ボイスチャンネル操作 ──
@@ -425,18 +461,87 @@ function toggleAutoScroll() {
     }
 }
 
+// ── カスタムセレクトボックスのインタラクション初期化 ──
+function setupCustomSelects() {
+    // トリガーをクリックした時の開閉制御
+    document.querySelectorAll('.custom-select-trigger').forEach(trigger => {
+        trigger.addEventListener('click', (e) => {
+            e.stopPropagation();
+            const parent = trigger.parentElement;
+            
+            // 他のドロップダウンをすべて閉じる
+            document.querySelectorAll('.custom-select').forEach(el => {
+                if (el !== parent) el.classList.remove('open');
+            });
+            
+            // 自身を切り替え
+            parent.classList.toggle('open');
+        });
+    });
+
+    // 画面上の他の場所をクリックしたときにドロップダウンを閉じる
+    document.addEventListener('click', () => {
+        document.querySelectorAll('.custom-select').forEach(el => el.classList.remove('open'));
+    });
+}
+
+// 音声言語カスタムセレクトボックスのセットアップ
+function setupDetectLangSelect() {
+    if (!elements.detectLangOptions) return;
+    
+    elements.detectLangOptions.querySelectorAll('.custom-option').forEach(option => {
+        option.addEventListener('click', () => {
+            const val = option.getAttribute('data-value');
+            
+            elements.detectLangOptions.querySelectorAll('.custom-option').forEach(o => o.classList.remove('selected'));
+            option.classList.add('selected');
+            
+            if (elements.detectLangText) {
+                elements.detectLangText.textContent = option.textContent;
+            }
+            
+            if (ws && ws.readyState === WebSocket.OPEN) {
+                ws.send(JSON.stringify({ type: 'change_detect_lang', lang: val }));
+            }
+        });
+    });
+}
+
+// 翻訳先言語カスタムセレクトボックスのセットアップ
+function setupTargetLangSelect() {
+    if (!elements.targetLangOptions) return;
+    
+    elements.targetLangOptions.querySelectorAll('.custom-option').forEach(option => {
+        option.addEventListener('click', () => {
+            const val = option.getAttribute('data-value');
+            
+            elements.targetLangOptions.querySelectorAll('.custom-option').forEach(o => o.classList.remove('selected'));
+            option.classList.add('selected');
+            
+            if (elements.targetLangText) {
+                elements.targetLangText.textContent = option.textContent;
+            }
+            
+            if (ws && ws.readyState === WebSocket.OPEN) {
+                ws.send(JSON.stringify({ type: 'change_language', lang: val }));
+            }
+        });
+    });
+}
+
+
 // ── イベントリスナー ──
 elements.clearBtn.addEventListener('click', clearTranscripts);
-elements.targetLang.addEventListener('change', onLanguageChange);
-if (elements.detectLang) {
-    elements.detectLang.addEventListener('change', onDetectLanguageChange);
-}
 elements.autoScrollBtn.addEventListener('click', toggleAutoScroll);
 document.getElementById('leave-btn')?.addEventListener('click', leaveVoice);
 
-// ASRモデル選択とDeepL APIキー適用
-elements.modelSelect?.addEventListener('change', onModelChange);
+// DeepL APIキー適用
 elements.applyKeyBtn?.addEventListener('click', applyDeepLKey);
+
+// カスタムセレクトコントロールの初期化
+setupCustomSelects();
+setupDetectLangSelect();
+setupTargetLangSelect();
 
 // ── 起動 ──
 connect();
