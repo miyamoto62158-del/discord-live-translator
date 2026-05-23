@@ -1,4 +1,5 @@
 @echo off
+chcp 65001 > NUL
 title Discord Live Translator
 
 :: Set paths

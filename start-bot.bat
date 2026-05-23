@@ -1,4 +1,5 @@
 @echo off
+chcp 65001 > NUL
 title LiveTranslator - Cloud Bot Server
 
 :: Node.js path
@@ -16,7 +17,7 @@ node index.js
 
 if %ERRORLEVEL% NEQ 0 (
     echo.
-    echo 🚨 [Error] Failed to start Bot.
+    echo [Error] Failed to start Bot.
     echo Please check DISCORD_TOKEN in bot/.env.
     echo.
     pause
