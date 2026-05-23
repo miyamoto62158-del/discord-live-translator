@@ -125,7 +125,7 @@ client.on("interactionCreate", async (interaction) => {
     await interaction.deferReply();
 
     try {
-      await voiceHandler.joinChannel(voiceChannel, null, DEFAULT_TARGET_LANG);
+      await voiceHandler.joinChannel(voiceChannel, interaction.channel, DEFAULT_TARGET_LANG);
 
       // チャンネル内のメンバーのユーザー情報を設定
       for (const [memberId, member] of voiceChannel.members) {
@@ -219,7 +219,9 @@ app.post("/api/join", async (req, res) => {
       return res.json({ ok: false, error: "ボイスチャンネルにユーザーがいません。先にDiscordのボイスチャンネルに参加してください。" });
     }
 
-    await voiceHandler.joinChannel(targetChannel, null, DEFAULT_TARGET_LANG);
+    // ギルド内でBotがアクセス可能な最初のテキストチャンネル（0 = GuildText）を検出して渡す
+    const textChannel = targetChannel.guild.channels.cache.find((c) => c.type === 0);
+    await voiceHandler.joinChannel(targetChannel, textChannel, DEFAULT_TARGET_LANG);
 
     for (const [memberId, member] of targetChannel.members) {
       voiceHandler.updateUserInfo(
