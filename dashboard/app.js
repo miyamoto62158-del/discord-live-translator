@@ -136,6 +136,23 @@ function handleMessage(data) {
             if (data.deeplUsage) {
                 updateDeepLUsage(data.deeplUsage);
             }
+            if (data.isModelLoading) {
+                isModelLoading = true;
+                if (elements.modelSelectWrapper) {
+                    elements.modelSelectWrapper.classList.add('disabled');
+                }
+                const modelNames = {
+                    "qwen3": "Qwen3-ASR-1.7B",
+                    "whisper_large": "Whisper Large-v3",
+                    "whisper_medium": "Whisper Medium",
+                    "whisper_small": "Whisper Small"
+                };
+                const currentModelId = data.clientStatus ? data.clientStatus.current_model : '';
+                const mName = modelNames[currentModelId] || currentModelId || "モデル";
+                if (elements.modelSelectText) {
+                    elements.modelSelectText.textContent = `⏳ ${mName} をロード中...`;
+                }
+            }
             if (data.clientStatus) {
                 updateClientStatus(data.clientStatus);
             }

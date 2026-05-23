@@ -1,9 +1,9 @@
 """
-client_transcriber.py - ローカルPC用文字起こしクライアント (マルチモデル・VRAM自動検出版)
+client_transcriber.py - ローカルPC用文字起こしクライアント (即時接続・モデル進捗可視化版)
 
-起動時に空きVRAMをチェックし、最適な文字起こしモデル（Qwen3-ASR または Faster-Whisper）を自動選択してロードします。
-その後、クラウドBotのWebSocketサーバーへ接続し、音声データの文字起こしを行います。
-ダッシュボードからの指示により、稼働中にモデルを動的に切り替えることができます。
+起動時にまずBotサーバーへWebSocket接続を確立し、ダッシュボードに「ロード中」の進捗を即時表示させた状態で、
+最適な初期文字起こしモデル（Qwen3-ASR または Faster-Whisper）のダウンロードとロードを実行します。
+これにより、モデル起動待ちの状態が完全に可視化され、手動でのモデル再選択は一切不要になります。
 """
 
 import os
@@ -106,7 +106,7 @@ class HybridTranscriberClient:
 
     async def initialize_engines(self, model_id: str):
         """指定されたモデルでASRエンジンをロード"""
-        logger.info("--- ASRハイブリッドクライアント初期化 ---")
+        logger.info(f"🤖 ASRモデル [{model_id}] の初期化を開始します...")
         
         if self.engine is None:
             self.engine = ASREngine(model_id=model_id)
@@ -114,7 +114,7 @@ class HybridTranscriberClient:
             self.engine.change_model(model_id)
             
         self.current_model_id = model_id
-        logger.info(f"✅ ASRモデル [{model_id}] のロード完了")
+        logger.info(f"✅ ASRモデル [{model_id}] のロードが完了しました")
 
     async def run(self):
         # 1. 起動前VRAMチェックとモデルの自動決定
@@ -127,25 +127,44 @@ class HybridTranscriberClient:
 
         self.free_vram_gb = free_gb
         self.available_models = available_models
+        self.current_model_id = initial_model_id
 
-        # 2. エンジンの初期化
-        try:
-            await self.initialize_engines(initial_model_id)
-        except Exception as e:
-            err_msg = f"エンジンのロード中に致命的なエラーが発生しました: {e}"
-            logger.error(f"🚨 {err_msg}")
-            await self.report_error_to_cloud(err_msg)
-            sys.exit(1)
-
-        # 3. クラウドBotへの接続ループ
+        # 2. 接続ループに入り、接続後にエンジンを非同期ロードする
         retry_delay = 5
         while True:
             try:
                 logger.info(f"🔌 Botサーバー ({CLOUD_BOT_WS_URL}) に接続しています...")
                 async with websockets.connect(CLOUD_BOT_WS_URL, max_size=10 * 1024 * 1024) as ws:
-                    logger.info("🔌 Botサーバーとの接続が確立しました。クライアント情報を登録します。")
+                    logger.info("🔌 Botサーバーとの接続が確立しました。")
                     
-                    # 登録メッセージを送信
+                    # エンジンが未ロードの場合、まず「ロード中」ステータスで仮登録
+                    if self.engine is None:
+                        logger.info(f"⏳ 初期モデル [{initial_model_id}] のロード準備中ステータスを送信します...")
+                        await ws.send(json.dumps({
+                            "type": "register",
+                            "vram_status": "loading",
+                            "free_vram_gb": self.free_vram_gb,
+                            "available_models": self.available_models,
+                            "current_model": self.current_model_id
+                        }))
+                        
+                        # UI側が「ロード中」状態に遷移する時間を確保
+                        await asyncio.sleep(0.3)
+                        
+                        # 実際にモデルをロード (VRAMに展開)
+                        try:
+                            await self.initialize_engines(initial_model_id)
+                        except Exception as e:
+                            err_msg = f"初期エンジンのロード中に致命的なエラーが発生しました: {e}"
+                            logger.error(f"🚨 {err_msg}")
+                            await ws.send(json.dumps({
+                                "type": "register",
+                                "vram_status": "error",
+                                "error_message": err_msg
+                            }))
+                            sys.exit(1)
+                    
+                    # ロード完了ステータスで正式登録
                     await ws.send(json.dumps({
                         "type": "register",
                         "vram_status": "ok",
@@ -174,7 +193,7 @@ class HybridTranscriberClient:
                 await asyncio.sleep(retry_delay)
 
     async def report_error_to_cloud(self, error_message):
-        """VRAM不足などの起動エラーをBotサーバーに通知して終了する"""
+        """起動エラーをBotサーバーに通知して終了する"""
         try:
             logger.info("🔌 Botサーバーへエラー情報の通知を試みています...")
             async with websockets.connect(CLOUD_BOT_WS_URL) as ws:
