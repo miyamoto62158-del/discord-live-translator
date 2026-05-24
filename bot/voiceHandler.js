@@ -112,7 +112,6 @@ const voiceChannelMembers = new Map(); // userId -> { username, avatarUrl }
 const userLanguages = new Map(); // userId -> 言語コード (例: "ja", "en", "id")
 const userNoiseThresholds = new Map(); // userId -> しきい値 (例: 200)
 const userLangHistories = new Map(); // userId -> 直近6回の検出言語配列 (例: ["ja", "ja", "en"])
-const userAutoLanguages = new Map(); // userId -> 自動制限された言語コード (例: "ja,en")
 let currentConnection = null;
 let currentVoiceChannelId = null; // 現在BotがいるVC ID
 let targetLang = "JA";
@@ -187,14 +186,36 @@ function broadcastVoiceMembers() {
  * ボイスチャンネルのメンバー一覧を配列として取得する
  */
 function getVoiceMembersArray() {
-  return Array.from(voiceChannelMembers.entries()).map(([id, info]) => ({
-    user_id: id,
-    username: info.username,
-    avatar_url: info.avatarUrl,
-    lang: userLanguages.get(id) || "auto",
-    auto_lang: userAutoLanguages.get(id) || "",
-    threshold: userNoiseThresholds.get(id) ?? NOISE_THRESHOLD_RMS
-  }));
+  return Array.from(voiceChannelMembers.entries()).map(([id, info]) => {
+    const strId = String(id);
+    const manualLang = userLanguages.get(strId) || "auto";
+    
+    let activeLimit = manualLang;
+    // 手動制限がなく、かつ自動履歴がある場合、自動で絞り込まれた言語をactiveLimitにセット
+    if (manualLang === "auto" && userLangHistories.has(strId)) {
+      const history = userLangHistories.get(strId) || [];
+      if (history.length > 0) {
+        const counts = {};
+        history.forEach(lang => {
+          counts[lang] = (counts[lang] || 0) + 1;
+        });
+        const sortedLangs = Object.keys(counts).sort((a, b) => counts[b] - counts[a]);
+        const top2Langs = sortedLangs.slice(0, 2);
+        if (top2Langs.length > 0) {
+          activeLimit = "auto:" + top2Langs.join(",");
+        }
+      }
+    }
+    
+    return {
+      user_id: strId,
+      username: info.username,
+      avatar_url: info.avatarUrl,
+      lang: manualLang,
+      threshold: userNoiseThresholds.get(strId) ?? NOISE_THRESHOLD_RMS,
+      active_limit: activeLimit
+    };
+  });
 }
 
 /**
@@ -377,7 +398,7 @@ function handleDashboardConnection(ws) {
         }
       } else if (data.type === "set_user_lang") {
         // ユーザーごとの検出言語設定を更新
-        const userId = data.user_id;
+        const userId = String(data.user_id);
         const lang = data.lang;
         if (lang === "auto") {
           userLanguages.delete(userId);
@@ -390,9 +411,11 @@ function handleDashboardConnection(ws) {
           user_id: userId,
           lang: lang
         });
+        // 手動変更時も状態更新を再配信
+        broadcastVoiceMembers();
       } else if (data.type === "set_user_threshold") {
         // ユーザーごとのノイズゲートしきい値を更新
-        const userId = data.user_id;
+        const userId = String(data.user_id);
         const threshold = parseInt(data.threshold, 10);
         if (!isNaN(threshold)) {
           userNoiseThresholds.set(userId, threshold);
@@ -402,6 +425,8 @@ function handleDashboardConnection(ws) {
             user_id: userId,
             threshold: threshold
           });
+          // 状態更新を再配信
+          broadcastVoiceMembers();
         }
       }
     } catch (err) {
@@ -523,14 +548,17 @@ function handleHybridConnection(ws) {
 
         // 有効な認識結果をユーザーの検出言語履歴に蓄積 (直近6件)
         if (detectedLang && detectedLang !== "auto") {
-          if (!userLangHistories.has(data.user_id)) {
-            userLangHistories.set(data.user_id, []);
+          const strUserId = String(data.user_id);
+          if (!userLangHistories.has(strUserId)) {
+            userLangHistories.set(strUserId, []);
           }
-          const history = userLangHistories.get(data.user_id);
+          const history = userLangHistories.get(strUserId);
           history.push(detectedLang);
           if (history.length > 6) {
             history.shift();
           }
+          // 自動制限の状態（履歴）が変わったため、即時にダッシュボードへ再同期して再描画！
+          broadcastVoiceMembers();
         }
 
         // 接続されている各ダッシュボード（ブラウザ）へ、個別に翻訳を行って送信する
@@ -761,8 +789,6 @@ function leaveChannel() {
   // VC退出時にメンバー一覧と状態をクリア
   currentVoiceChannelId = null;
   voiceChannelMembers.clear();
-  userAutoLanguages.clear();
-  userLangHistories.clear();
   broadcastVoiceMembers();
 
   broadcastToDashboards({
@@ -867,7 +893,8 @@ async function flushBuffer(userId) {
 
   // 音量（RMS）によるノイズ・無音判定 (ノイズゲート)
   const rms = calculateRMS(audioBuffer);
-  const userThreshold = userNoiseThresholds.get(userId) ?? NOISE_THRESHOLD_RMS;
+  const strUserId = String(userId);
+  const userThreshold = userNoiseThresholds.get(strUserId) ?? NOISE_THRESHOLD_RMS;
   if (rms < userThreshold) {
     // 呼吸音や小さな環境音・マイクノイズはスキップして誤翻訳を防ぐ
     console.log(`🔇 [Noise Gate] 音量が小さいため送信をスキップしました (RMS: ${rms.toFixed(1)} < ${userThreshold})`);
@@ -877,12 +904,11 @@ async function flushBuffer(userId) {
   const audioBase64 = audioBuffer.toString("base64");
 
   // 1. 手動選択された言語制限を取得
-  let finalDetectLang = userLanguages.get(userId) || "";
-  let isAutoLimited = false;
+  let finalDetectLang = userLanguages.get(strUserId) || "";
 
   // 2. 手動選択がない(またはauto)かつ過去の認識履歴がある場合、直近6発言の統計から上位2言語を自動適用
-  if ((!finalDetectLang || finalDetectLang === "auto") && userLangHistories.has(userId)) {
-    const history = userLangHistories.get(userId) || [];
+  if ((!finalDetectLang || finalDetectLang === "auto") && userLangHistories.has(strUserId)) {
+    const history = userLangHistories.get(strUserId) || [];
     if (history.length > 0) {
       const counts = {};
       history.forEach(lang => {
@@ -893,30 +919,8 @@ async function flushBuffer(userId) {
       const top2Langs = sortedLangs.slice(0, 2);
       if (top2Langs.length > 0) {
         finalDetectLang = top2Langs.join(",");
-        isAutoLimited = true;
-        
-        // 変更があればダッシュボードにブロードキャストしてUI表示を自動更新
-        const oldAutoLang = userAutoLanguages.get(userId);
-        if (oldAutoLang !== finalDetectLang) {
-          userAutoLanguages.set(userId, finalDetectLang);
-          console.log(`🤖 [Auto Lang Limit] ユーザー ${stream.username} の過去履歴から上位2言語を自動制限: [${finalDetectLang}] (履歴数: ${history.length})`);
-          broadcastToDashboards({
-            type: "user_auto_lang_update",
-            user_id: userId,
-            auto_lang: finalDetectLang
-          });
-        }
+        console.log(`🤖 [Auto Lang Limit] ユーザー ${stream.username} の過去履歴から上位2言語を自動制限: [${finalDetectLang}] (履歴数: ${history.length})`);
       }
-    }
-  } else {
-    // 手動制限が適用されているか履歴がない場合は、自動制限状態をクリア
-    if (userAutoLanguages.has(userId)) {
-      userAutoLanguages.delete(userId);
-      broadcastToDashboards({
-        type: "user_auto_lang_update",
-        user_id: userId,
-        auto_lang: ""
-      });
     }
   }
 

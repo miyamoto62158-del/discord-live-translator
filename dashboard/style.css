@@ -960,17 +960,8 @@ footer {
     margin-left: auto;
     position: relative;
     user-select: none;
-    min-width: 110px; /* 自動検出の表記（🤖 Auto (JA+EN)）が綺麗に見えるように少し広げる */
+    min-width: 90px;
     font-size: 0.72rem;
-}
-
-.member-lang-text {
-    display: inline-block;
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-    max-width: 90px; /* 自動検出テキストをより多く見せる */
-    vertical-align: middle;
 }
 
 .member-lang-trigger {

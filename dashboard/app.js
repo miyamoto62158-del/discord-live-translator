@@ -263,14 +263,6 @@ function handleMessage(data) {
                 }
             }
             break;
-
-        case 'user_auto_lang_update':
-            const memberToUpdate = voiceMembers.find(member => member.user_id === data.user_id);
-            if (memberToUpdate) {
-                memberToUpdate.auto_lang = data.auto_lang;
-                renderVoiceMembers(); // UI表示の自動更新！
-            }
-            break;
     }
 }
 
@@ -626,27 +618,35 @@ function renderVoiceMembers() {
                <div class="member-avatar-fallback" style="background: ${color}; display: none">${initial}</div>`
             : `<div class="member-avatar-fallback" style="background: ${color}">${initial}</div>`;
         
-        // 現在の言語ラベルの構築 (複数言語対応 & 自動制限の視覚化)
-        const isManual = member.lang && member.lang !== 'auto';
-        const activeLangs = (isManual ? member.lang : (member.auto_lang || 'auto')).split(',').filter(x => x);
+        // 現在の言語ラベルの構築 (手動・自動制限のビジュアル反映)
+        let currentLabel = '🌐 Auto Detect';
+        const limitStr = member.active_limit || member.lang || 'auto';
         
-        let currentLabel = '';
-        if (activeLangs.includes('auto') || activeLangs.length === 0) {
+        if (limitStr.startsWith('auto:')) {
+            // 自動言語制限が機能している状態 (例: "auto:ja,en")
+            const autoLangs = limitStr.substring(5).split(',').filter(x => x);
+            const flags = autoLangs.map(val => {
+                const choice = langChoices.find(c => c.value === val);
+                return choice ? choice.label.split(' ')[0] : val.toUpperCase();
+            }).join('+');
+            currentLabel = `🌐 Auto (${flags})`;
+        } else if (limitStr === 'auto') {
             currentLabel = '🌐 Auto Detect';
         } else {
-            const formatted = activeLangs.map(val => {
+            // 手動で言語制限されている状態 (例: "ja,en")
+            const activeLangs = limitStr.split(',').filter(x => x);
+            currentLabel = activeLangs.map(val => {
                 const choice = langChoices.find(c => c.value === val);
                 if (choice) {
-                    const flag = choice.label.split(' ')[0]; // 国旗
+                    const flag = choice.label.split(' ')[0];
                     return `${flag} ${val.toUpperCase()}`;
                 }
                 return val.toUpperCase();
-            }).join(' + ');
-            
-            currentLabel = isManual ? formatted : `🤖 Auto (${formatted})`;
+            }).join('+');
         }
         
         // 言語選択オプションの構築 (チェックボックス風)
+        const activeLangs = (member.lang || 'auto').split(',').filter(x => x);
         const optionsHtml = langChoices.map(c => {
             const isSelected = activeLangs.includes(c.value);
             return `
