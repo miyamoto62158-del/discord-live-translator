@@ -92,7 +92,7 @@ header {
     justify-content: space-between;
     padding: 12px 24px;
     gap: 12px;
-    z-index: 100;
+    z-index: 1000;
 }
 
 .header-left {
