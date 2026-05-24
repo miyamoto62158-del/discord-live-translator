@@ -111,7 +111,7 @@ const knownUsers = new Map(); // userId -> { username, avatarUrl }
 const voiceChannelMembers = new Map(); // userId -> { username, avatarUrl }
 const userLanguages = new Map(); // userId -> 言語コード (例: "ja", "en", "id")
 const userNoiseThresholds = new Map(); // userId -> しきい値 (例: 200)
-const userLangHistories = new Map(); // userId -> 直近20回の検出言語配列 (例: ["ja", "ja", "en"])
+const userLangHistories = new Map(); // userId -> 直近6回の検出言語配列 (例: ["ja", "ja", "en"])
 let currentConnection = null;
 let currentVoiceChannelId = null; // 現在BotがいるVC ID
 let targetLang = "JA";
@@ -519,14 +519,14 @@ function handleHybridConnection(ws) {
 
         console.log(`🎤 [Hybrid] [${data.username}] ${originalText} (${detectedLang})`);
 
-        // 有効な認識結果をユーザーの検出言語履歴に蓄積 (直近20件)
+        // 有効な認識結果をユーザーの検出言語履歴に蓄積 (直近6件)
         if (detectedLang && detectedLang !== "auto") {
           if (!userLangHistories.has(data.user_id)) {
             userLangHistories.set(data.user_id, []);
           }
           const history = userLangHistories.get(data.user_id);
           history.push(detectedLang);
-          if (history.length > 20) {
+          if (history.length > 6) {
             history.shift();
           }
         }
