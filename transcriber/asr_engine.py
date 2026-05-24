@@ -114,9 +114,100 @@ class ASREngine:
                 "en": "en",
                 "zh": "zh",
                 "ko": "ko",
-                "id": "id"
+                "id": "id",
+                "yue": "cantonese",
+                "es": "es",
+                "fr": "fr",
+                "de": "de",
+                "ru": "ru",
+                "th": "th",
+                "vi": "vi"
             }
             lang_code = lang_map.get(detect_language, None)
+
+            # ── 複数言語制限モードの処理 (例: "ja,en") ──
+            if detect_language and "," in detect_language:
+                allowed_langs = [l.strip() for l in detect_language.split(",") if l.strip()]
+                
+                if self.model_id == "qwen3":
+                    # Qwen3-ASRでの複数言語制限
+                    results = self.model.transcribe(
+                        audio=tmp_wav_path,
+                        language=None # まず自動判定で走らせる
+                    )
+                    if results and len(results) > 0:
+                        transcription = results[0]
+                        detected = str(transcription.language).lower()
+                        
+                        # Qwenの英語表記から小文字コードへのマッピング
+                        qwen_to_code = {
+                            "japanese": "ja", "english": "en", "chinese": "zh", 
+                            "korean": "ko", "indonesian": "id", "spanish": "es",
+                            "french": "fr", "german": "de", "russian": "ru",
+                            "thai": "th", "vietnamese": "vi", "cantonese": "yue"
+                        }
+                        detected_code = qwen_to_code.get(detected, "auto")
+                        
+                        if detected_code in allowed_langs:
+                            return {
+                                "text": transcription.text,
+                                "language": detected_code
+                            }
+                        else:
+                            # 判定結果が許可された言語群に含まれない場合、第1優先言語で強制再推論
+                            best_lang = allowed_langs[0]
+                            qwen_lang_map = {
+                                "ja": "Japanese", "en": "English", "zh": "Chinese",
+                                "ko": "Korean", "id": "Indonesian", "yue": "Cantonese",
+                                "es": "Spanish", "fr": "French", "de": "German",
+                                "ru": "Russian", "th": "Thai", "vi": "Vietnamese"
+                            }
+                            qwen_lang = qwen_lang_map.get(best_lang, None)
+                            
+                            results = self.model.transcribe(
+                                audio=tmp_wav_path,
+                                language=qwen_lang
+                            )
+                            if results and len(results) > 0:
+                                return {
+                                    "text": results[0].text,
+                                    "language": best_lang
+                                }
+                else:
+                    # Faster-Whisperでの複数言語制限
+                    # 1. まず自動判定で推論を走らせ、言語判定結果の全言語の確率を取得
+                    segments, info = self.model.transcribe(
+                        tmp_wav_path,
+                        beam_size=5,
+                        language=None
+                    )
+                    
+                    best_lang = allowed_langs[0]
+                    max_prob = -1.0
+                    
+                    if hasattr(info, "all_language_probs") and info.all_language_probs:
+                        probs = dict(info.all_language_probs)
+                        for lang in allowed_langs:
+                            # whisperでの広東語コードは 'cantonese'
+                            whisper_lang_code = "cantonese" if lang == "yue" else lang
+                            prob = probs.get(whisper_lang_code, 0.0)
+                            if prob > max_prob:
+                                max_prob = prob
+                                best_lang = lang
+                                
+                    logger.info(f"🎯 [ASR 複数言語制限] 候補 {allowed_langs} から最も確率の高い [{best_lang}] (確率: {max_prob:.3f}) を選択して強制デコードします。")
+                    
+                    # 2. 確率が最も高かった方の言語で強制的にデコードを実行
+                    segments, info = self.model.transcribe(
+                        tmp_wav_path,
+                        beam_size=5,
+                        language="cantonese" if best_lang == "yue" else best_lang
+                    )
+                    text = "".join([segment.text for segment in segments]).strip()
+                    return {
+                        "text": text,
+                        "language": best_lang
+                    }
 
             if self.model_id == "qwen3":
                 # Qwen3-ASR専用の言語パラメータマッピング（英語のフルネーム）
@@ -125,7 +216,14 @@ class ASREngine:
                     "en": "English",
                     "zh": "Chinese",
                     "ko": "Korean",
-                    "id": "Indonesian"
+                    "id": "Indonesian",
+                    "yue": "Cantonese",
+                    "es": "Spanish",
+                    "fr": "French",
+                    "de": "German",
+                    "ru": "Russian",
+                    "th": "Thai",
+                    "vi": "Vietnamese"
                 }
                 qwen_lang = qwen_lang_map.get(detect_language, None)
                 

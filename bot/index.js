@@ -75,6 +75,24 @@ const commands = [
 client.once("ready", async () => {
   console.log(`✅ Discord Bot ログイン成功: ${client.user.tag}`);
 
+  // 起動時の残留クリーンアップ：もしギルド内でBot自身がVCに属していたら強制切断する
+  client.guilds.cache.forEach(async (guild) => {
+    try {
+      const botMember = guild.members.me || await guild.members.fetch(client.user.id).catch(() => null);
+      if (botMember && botMember.voice.channelId) {
+        console.log(`🧹 起動クリーンアップ: ギルド「${guild.name}」のボイスチャンネルから残留Botを強制退出させます...`);
+        const { getVoiceConnection } = require("@discordjs/voice");
+        const connection = getVoiceConnection(guild.id);
+        if (connection) {
+          connection.destroy();
+        }
+        await botMember.voice.disconnect().catch(() => {});
+      }
+    } catch (e) {
+      console.error("⚠️ 残留Botクリーンアップ中にエラーが発生しました:", e.message);
+    }
+  });
+
   // スラッシュコマンドを登録
   const rest = new REST({ version: "10" }).setToken(DISCORD_TOKEN);
   try {
@@ -182,6 +200,28 @@ client.on("voiceStateUpdate", (oldState, newState) => {
       newState.member.displayAvatarURL({ size: 64, extension: "png" })
     );
   }
+
+  // Botの参加チャンネルへのメンバー出入りを追跡
+  const botChannelId = voiceHandler.getCurrentChannelId();
+  if (!botChannelId) return;
+
+  const memberId = newState.id || oldState.id;
+  const member = newState.member || oldState.member;
+  if (!member || member.user.bot) return;
+
+  // メンバーがBotのチャンネルに参加した
+  if (newState.channelId === botChannelId && oldState.channelId !== botChannelId) {
+    voiceHandler.addVoiceMember(
+      memberId,
+      member.displayName,
+      member.displayAvatarURL({ size: 64, extension: "png" })
+    );
+  }
+
+  // メンバーがBotのチャンネルから退出した
+  if (oldState.channelId === botChannelId && newState.channelId !== botChannelId) {
+    voiceHandler.removeVoiceMember(memberId);
+  }
 });
 
 // ── Express: ダッシュボード配信 ──
@@ -239,6 +279,15 @@ app.post("/api/join", async (req, res) => {
 });
 
 app.post("/api/leave", (req, res) => {
+  // リクエストが localhost (ループバック) からのものかチェック
+  const ip = req.ip || req.socket.remoteAddress;
+  const isLocal = ip === '127.0.0.1' || ip === '::1' || ip === '::ffff:127.0.0.1';
+  
+  if (!isLocal) {
+    console.warn(`⚠️ [Security Alert] 外部IP (${ip}) からのBot退出要求をブロックしました。`);
+    return res.status(403).json({ ok: false, error: "アクセス権限がありません。Botの退出はホストPCからのみ実行可能です。" });
+  }
+
   voiceHandler.leaveChannel();
   res.json({ ok: true });
   console.log("👋 ダッシュボードからボイスチャンネルを退出");
@@ -287,11 +336,31 @@ server.listen(DASHBOARD_PORT, () => {
   console.log(`📊 ダッシュボード ＆ WebSocket サーバー起動完了！`);
   console.log(`🔗 Webダッシュボード: http://localhost:${DASHBOARD_PORT}`);
   console.log(`🔌 ローカルPC接続用WebSocket: ws://localhost:${DASHBOARD_PORT}/hybrid`);
+  
+  // localtunnel をバックグラウンドで自動起動
+  voiceHandler.startTunnel();
 });
 
 // ── Botログイン ──
 client.login(DISCORD_TOKEN).catch((error) => {
-  console.error("❌ Discord Botのログインに失敗しました:", error.message);
-  console.error("   bot/.env の DISCORD_TOKEN を確認してください。");
+  console.log("❌ Discord Botのログインに失敗しました:", error.message);
+  console.log("   bot/.env の DISCORD_TOKEN を確認してください。");
   process.exit(1);
 });
+
+// ── プロセス終了時のクリーンアップ (Botの迅速な退出) ──
+const cleanup = () => {
+  console.log("🧹 終了シグナルを検知しました。Botを退出させます...");
+  try {
+    voiceHandler.leaveChannel();
+  } catch (e) {
+    console.error("❌ 終了時の退出処理に失敗:", e);
+  }
+  process.exit(0);
+};
+
+process.on("SIGINT", cleanup);
+process.on("SIGTERM", cleanup);
+process.on("SIGBREAK", cleanup); // Windowsのcmd.exe用
+process.on("SIGHUP", cleanup);   // ターミナル切断用
+

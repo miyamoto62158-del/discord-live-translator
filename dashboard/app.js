@@ -17,6 +17,7 @@ let messageCount = 0;
 let isConnected = false;
 let autoScroll = true;  // 自動追従フラグ
 let cachedClientStatus = null; // キャッシュされたクライアント情報
+let voiceMembers = []; // 現在VCにいるメンバーの配列
 let isModelLoading = false;    // ASRモデルロード中フラグ
 
 const userColors = {};
@@ -73,9 +74,8 @@ const elements = {
     modelOptions: document.getElementById('model-options'),
     vramInfo: document.getElementById('vram-info'),
     
-    detectLangWrapper: document.getElementById('detect-lang-wrapper'),
-    detectLangText: document.getElementById('detect-lang-text'),
-    detectLangOptions: document.getElementById('detect-lang-options'),
+    voiceMembersPanel: document.getElementById('voice-members-panel'),
+    voiceMembersList: document.getElementById('voice-members-list'),
     
     targetLangWrapper: document.getElementById('target-lang-wrapper'),
     targetLangText: document.getElementById('target-lang-text'),
@@ -83,7 +83,8 @@ const elements = {
     
     // DeepL設定
     deeplKeyInput: document.getElementById('deepl-key-input'),
-    applyKeyBtn: document.getElementById('apply-key-btn')
+    applyKeyBtn: document.getElementById('apply-key-btn'),
+    connectionWarning: document.getElementById('connection-warning')
 };
 
 // ── WebSocket接続 ──
@@ -97,10 +98,8 @@ function connect() {
         
         // 初期カスタムセレクトの選択状態を送信
         const activeTarget = elements.targetLangOptions.querySelector('.custom-option.selected')?.getAttribute('data-value') || 'JA';
-        const activeDetect = elements.detectLangOptions.querySelector('.custom-option.selected')?.getAttribute('data-value') || 'auto';
         
         ws.send(JSON.stringify({ type: 'change_language', lang: activeTarget }));
-        ws.send(JSON.stringify({ type: 'change_detect_lang', lang: activeDetect }));
         
         // 保存されているDeepL APIキーがあれば自動適用
         const savedKey = localStorage.getItem('deepl_api_key');
@@ -155,6 +154,10 @@ function handleMessage(data) {
             }
             if (data.clientStatus) {
                 updateClientStatus(data.clientStatus);
+            }
+            if (data.voiceMembers && data.voiceMembers.length > 0) {
+                voiceMembers = data.voiceMembers;
+                renderVoiceMembers();
             }
             updateVoiceStatus(data.connected);
             break;
@@ -219,6 +222,26 @@ function handleMessage(data) {
                 updateDeepLUsage(data.deepl_usage);
             }
             break;
+            
+        case 'voice_members_update':
+            voiceMembers = data.members || [];
+            renderVoiceMembers();
+            break;
+
+        case 'user_lang_update':
+            // 他のダッシュボードからの言語変更を反映
+            const member = voiceMembers.find(m => m.user_id === data.user_id);
+            if (member) {
+                const oldLang = member.lang;
+                member.lang = data.lang;
+                renderVoiceMembers();
+                
+                if (oldLang !== data.lang) {
+                    const langLabel = data.lang === 'auto' ? '🌐 Auto Detect' : (langNames[data.lang] || data.lang);
+                    showToast(`${member.username} の検出言語が「${langLabel}」に更新されました`, 'info');
+                }
+            }
+            break;
     }
 }
 
@@ -235,7 +258,7 @@ function updateClientStatus(status) {
     
     if (!status || !status.hasClient) {
         // 文字起こしクライアントが接続されていない場合
-        elements.modelSelectText.textContent = '未接続 (待ち...)';
+        elements.modelSelectText.textContent = '⚠️ GPUクライアント起動待ち...';
         elements.modelSelectWrapper.classList.add('disabled');
         elements.vramInfo.textContent = '(--GB)';
         elements.modelOptions.innerHTML = '';
@@ -426,6 +449,14 @@ function updateDeepLUsage(usage) {
 function updateConnectionStatus(connected) {
     elements.status.className = `status-badge ${connected ? 'connected' : 'disconnected'}`;
     elements.statusText.textContent = connected ? '接続中' : '切断中';
+    
+    if (elements.connectionWarning) {
+        if (connected) {
+            elements.connectionWarning.classList.remove('show');
+        } else {
+            elements.connectionWarning.classList.add('show');
+        }
+    }
 }
 
 function scrollToTop() {
@@ -460,7 +491,18 @@ async function leaveVoice() {
 
 function updateVoiceButtons() {
     const leaveBtn = document.getElementById('leave-btn');
-    if (leaveBtn) leaveBtn.style.display = isInVoice ? 'inline-flex' : 'none';
+    if (!leaveBtn) return;
+    
+    // ホストPC自身（localhost / 127.0.0.1 / ::1）からのアクセスか判定
+    const isLocalhost = window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1' || window.location.hostname === '[::1]' || window.location.hostname === '::1';
+    
+    if (!isLocalhost) {
+        // 共有先（リモートメンバー）の場合は、退出ボタンを完全に非表示にする
+        leaveBtn.style.display = 'none';
+        return;
+    }
+    
+    leaveBtn.style.display = isInVoice ? 'inline-flex' : 'none';
 }
 
 
@@ -499,26 +541,237 @@ function setupCustomSelects() {
     // 画面上の他の場所をクリックしたときにドロップダウンを閉じる
     document.addEventListener('click', () => {
         document.querySelectorAll('.custom-select').forEach(el => el.classList.remove('open'));
+        document.querySelectorAll('.member-lang-select').forEach(el => el.classList.remove('open'));
     });
 }
 
-// 音声言語カスタムセレクトボックスのセットアップ
+// 音声言語カスタムセレクトボックスのセットアップ（個別設定に移行したため空）
 function setupDetectLangSelect() {
-    if (!elements.detectLangOptions) return;
+    // グローバル検出言語セレクトは廃止。発言者ごとの設定パネルに移行済み。
+}
+
+// ── ボイスメンバーパネルの描画 ──
+function renderVoiceMembers() {
+    if (!elements.voiceMembersPanel || !elements.voiceMembersList) return;
     
-    elements.detectLangOptions.querySelectorAll('.custom-option').forEach(option => {
-        option.addEventListener('click', () => {
-            const val = option.getAttribute('data-value');
+    if (voiceMembers.length === 0) {
+        elements.voiceMembersPanel.style.display = 'none';
+        return;
+    }
+    
+    elements.voiceMembersPanel.style.display = 'block';
+    elements.voiceMembersList.innerHTML = '';
+    
+    const langChoices = [
+        { value: 'auto', label: '🌐 Auto Detect' },
+        { value: 'ja', label: '🇯🇵 Japanese' },
+        { value: 'en', label: '🇺🇸 English' },
+        { value: 'zh', label: '🇨🇳 Chinese' },
+        { value: 'ko', label: '🇰🇷 Korean' },
+        { value: 'id', label: '🇮🇩 Indonesian' },
+        { value: 'yue', label: '🇭🇰 Cantonese' },
+        { value: 'es', label: '🇪🇸 Spanish' },
+        { value: 'fr', label: '🇫🇷 French' },
+        { value: 'de', label: '🇩🇪 German' },
+        { value: 'ru', label: '🇷🇺 Russian' },
+        { value: 'th', label: '🇹🇭 Thai' },
+        { value: 'vi', label: '🇻🇳 Vietnamese' },
+    ];
+    
+    voiceMembers.forEach(member => {
+        const card = document.createElement('div');
+        card.className = `voice-member-card${member.lang && member.lang !== 'auto' ? ' lang-set' : ''}`;
+        card.setAttribute('data-user-id', member.user_id);
+        
+        // ユーザーカラー
+        if (!userColors[member.user_id]) {
+            userColors[member.user_id] = colorPalette[colorIndex % colorPalette.length];
+            colorIndex++;
+        }
+        const color = userColors[member.user_id];
+        const initial = member.username.charAt(0).toUpperCase();
+        
+        // アバター
+        const avatarHtml = member.avatar_url
+            ? `<img class="member-avatar" src="${escapeHtml(member.avatar_url)}" alt="${escapeHtml(member.username)}" onerror="this.style.display='none';this.nextElementSibling.style.display='flex'">
+               <div class="member-avatar-fallback" style="background: ${color}; display: none">${initial}</div>`
+            : `<div class="member-avatar-fallback" style="background: ${color}">${initial}</div>`;
+        
+        // 現在の言語ラベルの構築 (複数言語対応)
+        const activeLangs = (member.lang || 'auto').split(',').filter(x => x);
+        let currentLabel = '';
+        if (activeLangs.includes('auto') || activeLangs.length === 0) {
+            currentLabel = '🌐 Auto Detect';
+        } else {
+            currentLabel = activeLangs.map(val => {
+                const choice = langChoices.find(c => c.value === val);
+                if (choice) {
+                    const flag = choice.label.split(' ')[0]; // 国旗
+                    return `${flag} ${val.toUpperCase()}`;
+                }
+                return val.toUpperCase();
+            }).join(' + ');
+        }
+        
+        // 言語選択オプションの構築 (チェックボックス風)
+        const optionsHtml = langChoices.map(c => {
+            const isSelected = activeLangs.includes(c.value);
+            return `
+                <div class="member-lang-option${isSelected ? ' selected' : ''}" data-value="${c.value}">
+                    <span class="checkbox-indicator" style="margin-right: 6px; font-family: monospace;">${isSelected ? '☑️' : '☐'}</span>
+                    <span class="option-label">${c.label}</span>
+                </div>
+            `;
+        }).join('');
+        
+        card.innerHTML = `
+            ${avatarHtml}
+            <span class="member-name">${escapeHtml(member.username)}</span>
+            <div class="member-lang-select" data-user-id="${member.user_id}">
+                <div class="member-lang-trigger">
+                    <span class="member-lang-text">${currentLabel}</span>
+                    <div class="arrow"></div>
+                </div>
+                <div class="member-lang-options">
+                    ${optionsHtml}
+                </div>
+            </div>
+        `;
+        
+        elements.voiceMembersList.appendChild(card);
+    });
+    
+    // イベントリスナーの登録
+    setupMemberLangSelects();
+}
+
+// ── メンバーごとの言語セレクトのイベント処理 ──
+function setupMemberLangSelects() {
+    // トリガーのクリックで開閉
+    document.querySelectorAll('.member-lang-trigger').forEach(trigger => {
+        trigger.addEventListener('click', (e) => {
+            e.stopPropagation();
+            const selectEl = trigger.parentElement;
             
-            elements.detectLangOptions.querySelectorAll('.custom-option').forEach(o => o.classList.remove('selected'));
-            option.classList.add('selected');
+            // 他のメンバーセレクトを閉じる
+            document.querySelectorAll('.member-lang-select').forEach(el => {
+                if (el !== selectEl) el.classList.remove('open');
+            });
+            // ヘッダーのセレクトも閉じる
+            document.querySelectorAll('.custom-select').forEach(el => el.classList.remove('open'));
             
-            if (elements.detectLangText) {
-                elements.detectLangText.textContent = option.textContent;
+            selectEl.classList.toggle('open');
+        });
+    });
+    
+    // オプションのクリック
+    document.querySelectorAll('.member-lang-option').forEach(option => {
+        option.addEventListener('click', (e) => {
+            e.stopPropagation();
+            const selectEl = option.closest('.member-lang-select');
+            const userId = selectEl.getAttribute('data-user-id');
+            const clickedVal = option.getAttribute('data-value');
+            
+            const memberData = voiceMembers.find(m => m.user_id === userId);
+            if (!memberData) return;
+            
+            let activeLangs = (memberData.lang || 'auto').split(',').filter(x => x);
+            const oldLang = memberData.lang;
+            
+            // 複数言語対応のトグルロジック
+            if (clickedVal === 'auto') {
+                activeLangs = ['auto'];
+            } else {
+                // 'auto'をクリア
+                activeLangs = activeLangs.filter(l => l !== 'auto');
+                
+                if (activeLangs.includes(clickedVal)) {
+                    // すでに選択されている場合はトグル解除
+                    activeLangs = activeLangs.filter(l => l !== clickedVal);
+                    if (activeLangs.length === 0) {
+                        activeLangs = ['auto'];
+                    }
+                } else {
+                    // 新規追加。ただし最大2言語まで
+                    if (activeLangs.length >= 2) {
+                        showToast('最大2つの言語まで同時に選択できます', 'info');
+                        return;
+                    }
+                    activeLangs.push(clickedVal);
+                }
             }
             
+            const newLangStr = activeLangs.join(',');
+            memberData.lang = newLangStr;
+            
+            // UIの状態をDOMで直接書き換え（ドロップダウンを開いたままにして操作性を向上）
+            
+            // 1. 各オプションの選択状態（チェックマーク）の更新
+            selectEl.querySelectorAll('.member-lang-option').forEach(opt => {
+                const val = opt.getAttribute('data-value');
+                const isSel = activeLangs.includes(val);
+                if (isSel) {
+                    opt.classList.add('selected');
+                } else {
+                    opt.classList.remove('selected');
+                }
+                const indicator = opt.querySelector('.checkbox-indicator');
+                if (indicator) {
+                    indicator.textContent = isSel ? '☑️' : '☐';
+                }
+            });
+            
+            // 2. トリガー表示ラベルの更新
+            let currentLabel = '';
+            const langChoices = [
+                { value: 'auto', label: '🌐 Auto Detect' },
+                { value: 'ja', label: '🇯🇵 Japanese' },
+                { value: 'en', label: '🇺🇸 English' },
+                { value: 'zh', label: '🇨🇳 Chinese' },
+                { value: 'ko', label: '🇰🇷 Korean' },
+                { value: 'id', label: '🇮🇩 Indonesian' },
+                { value: 'yue', label: '🇭🇰 Cantonese' },
+                { value: 'es', label: '🇪🇸 Spanish' },
+                { value: 'fr', label: '🇫🇷 French' },
+                { value: 'de', label: '🇩🇪 German' },
+                { value: 'ru', label: '🇷🇺 Russian' },
+                { value: 'th', label: '🇹🇭 Thai' },
+                { value: 'vi', label: '🇻🇳 Vietnamese' },
+            ];
+            if (activeLangs.includes('auto') || activeLangs.length === 0) {
+                currentLabel = '🌐 Auto Detect';
+            } else {
+                currentLabel = activeLangs.map(val => {
+                    const choice = langChoices.find(c => c.value === val);
+                    if (choice) {
+                        const flag = choice.label.split(' ')[0]; // 国旗
+                        return `${flag} ${val.toUpperCase()}`;
+                    }
+                    return val.toUpperCase();
+                }).join(' + ');
+            }
+            selectEl.querySelector('.member-lang-text').textContent = currentLabel;
+            
+            // 3. カードの枠色（lang-set）の更新
+            const card = selectEl.closest('.voice-member-card');
+            if (newLangStr !== 'auto' && newLangStr !== '') {
+                card.classList.add('lang-set');
+            } else {
+                card.classList.remove('lang-set');
+            }
+            
+            // WebSocketで送信
             if (ws && ws.readyState === WebSocket.OPEN) {
-                ws.send(JSON.stringify({ type: 'change_detect_lang', lang: val }));
+                ws.send(JSON.stringify({ type: 'set_user_lang', user_id: userId, lang: newLangStr }));
+                console.log(`🌍 ユーザー ${userId} の検出言語を変更: ${newLangStr}`);
+                
+                if (oldLang !== newLangStr) {
+                    const displayLabel = activeLangs.map(l => {
+                        return l === 'auto' ? 'Auto Detect' : (langNames[l] || l);
+                    }).join(' + ');
+                    const userName = memberData ? memberData.username : 'ユーザー';
+                    showToast(`${userName} の検出言語を「${displayLabel}」に設定しました`, 'success');
+                }
             }
         });
     });
@@ -562,3 +815,31 @@ setupTargetLangSelect();
 
 // ── 起動 ──
 connect();
+
+// ── トースト通知の表示 ──
+function showToast(message, type = 'success') {
+    let container = document.getElementById('toast-container');
+    if (!container) {
+        container = document.createElement('div');
+        container.id = 'toast-container';
+        container.className = 'toast-container';
+        document.body.appendChild(container);
+    }
+    
+    const toast = document.createElement('div');
+    toast.className = `toast ${type}`;
+    
+    const icon = type === 'success' ? '✅' : 'ℹ️';
+    
+    toast.innerHTML = `
+        <span class="toast-icon">${icon}</span>
+        <span class="toast-message">${escapeHtml(message)}</span>
+    `;
+    
+    container.appendChild(toast);
+    
+    // 4.3秒後に自動削除 (CSSのアニメーション時間4秒 + フェードアウト0.3秒に合わせる)
+    setTimeout(() => {
+        toast.remove();
+    }, 4300);
+}

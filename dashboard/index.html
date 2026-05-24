@@ -11,6 +11,12 @@
     <link rel="stylesheet" href="style.css">
 </head>
 <body>
+    <!-- 接続警告バナー -->
+    <div id="connection-warning" class="connection-warning show">
+        <span class="warning-icon">⚠️</span>
+        <span class="warning-text">Botサーバーと未接続です。裏で起動ランチャー（start.bat）が正しく立ち上がっていることを確認してください。再接続を試みています...</span>
+    </div>
+
     <!-- ヘッダー -->
     <header id="header">
         <div class="header-left">
@@ -42,25 +48,6 @@
                 <span id="vram-info" style="font-size: 0.72rem; color: var(--text-muted); margin-left: 4px;">(--GB)</span>
             </div>
 
-            <!-- 音声言語選択 -->
-            <div class="custom-select-container" style="margin-right: 15px;">
-                <label class="select-label">音声言語:</label>
-                <div class="custom-select" id="detect-lang-wrapper">
-                    <div class="custom-select-trigger" id="detect-lang-trigger">
-                        <span id="detect-lang-text">🌐 自動検出</span>
-                        <div class="arrow"></div>
-                    </div>
-                    <div class="custom-options" id="detect-lang-options">
-                        <div class="custom-option selected" data-value="auto">🌐 自動検出</div>
-                        <div class="custom-option" data-value="ja">🇯🇵 日本語</div>
-                        <div class="custom-option" data-value="en">🇺🇸 英語</div>
-                        <div class="custom-option" data-value="zh">🇨🇳 中国語</div>
-                        <div class="custom-option" data-value="ko">🇰🇷 韓国語</div>
-                        <div class="custom-option" data-value="id">🇮🇩 インドネシア語</div>
-                        <div class="custom-option" data-value="yue">🇭🇰 広東語</div>
-                    </div>
-                </div>
-            </div>
 
             <!-- 翻訳先言語選択 -->
             <div class="custom-select-container" style="margin-right: 15px;">
@@ -90,6 +77,17 @@
             </div>
         </div>
     </header>
+
+    <!-- ボイスチャンネル参加者パネル -->
+    <section id="voice-members-panel" class="voice-members-panel" style="display: none;">
+        <div class="voice-members-header">
+            <span class="voice-members-title">🎙️ Voice Channel Members</span>
+            <span class="voice-members-hint">Set detection language per speaker for maximum accuracy</span>
+        </div>
+        <div id="voice-members-list" class="voice-members-list">
+            <!-- JavaScriptで動的に構築 -->
+        </div>
+    </section>
 
     <!-- メインコンテンツ -->
     <main id="transcript-container">

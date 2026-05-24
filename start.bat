@@ -26,18 +26,10 @@ timeout /t 5 /nobreak > nul
 echo.
 echo ------------------------------------------------------------
 echo 🌐 [Dashboard Sharing Option]
-echo    Would you like to share the dashboard with remote friends?
-echo    (This generates a public link so they can view it directly)
+echo    Dashboard sharing is handled natively in the background.
+echo    The Bot will automatically post the public URL and password
+echo    directly in your Discord text channel when it joins!
 echo ------------------------------------------------------------
-set /p SHARE_CHOICE="Enable public URL (localtunnel) in a new window? [Y/N]: "
-if /i "%SHARE_CHOICE%"=="Y" (
-    echo.
-    echo [INFO] Starting tunnel in a new window...
-    echo        Remote members might be asked for your Public IP.
-    echo        Check your Public IP at: https://ipv4.icanhazip.com/
-    echo.
-    start "Discord Live Translator - Share Tunnel" cmd /k "npx localtunnel --port 3000"
-)
 
 echo.
 echo [3/3] Opening Browser Dashboard...

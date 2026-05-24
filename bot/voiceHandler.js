@@ -8,6 +8,9 @@
  */
 
 const deepl = require("deepl-node");
+const { spawn } = require("child_process");
+const https = require("https");
+const os = require("os");
 
 const {
   joinVoiceChannel,
@@ -16,6 +19,83 @@ const {
   entersState,
 } = require("@discordjs/voice");
 const prism = require("prism-media");
+
+// localtunnel 外部公開用の情報とヘルパー関数
+let publicUrl = "";
+let globalIp = "";
+
+// ローカルネットワークのIPアドレスを取得
+function getLocalIp() {
+  const interfaces = os.networkInterfaces();
+  for (const name of Object.keys(interfaces)) {
+    for (const iface of interfaces[name]) {
+      if (iface.family === 'IPv4' && !iface.internal) {
+        return iface.address;
+      }
+    }
+  }
+  return 'localhost';
+}
+
+// グローバルIP（トンネルパスワード）を自動取得
+function fetchGlobalIp() {
+  return new Promise((resolve) => {
+    https.get('https://api.ipify.org?format=json', (res) => {
+      let data = '';
+      res.on('data', chunk => data += chunk);
+      res.on('end', () => {
+        try {
+          const ip = JSON.parse(data).ip;
+          resolve(ip);
+        } catch (e) {
+          resolve("取得失敗 (https://ipv4.icanhazip.com/ 等で確認してください)");
+        }
+      });
+    }).on('error', () => {
+      resolve("取得失敗");
+    });
+  });
+}
+
+// localtunnel をバックグラウンドで起動し、URLを自動パースする
+async function startTunnel() {
+  globalIp = await fetchGlobalIp();
+  console.log(`🔑 [Tunnel Password] Host Public IP: ${globalIp}`);
+  console.log(`🏠 [Local Network IP] LAN Share: http://${getLocalIp()}:3000`);
+
+  console.log("🔌 [Tunnel] localtunnel を起動しています...");
+  const tunnelProcess = spawn('npx.cmd', ['localtunnel', '--port', '3000'], { shell: true });
+  
+  tunnelProcess.stdout.on('data', (data) => {
+    const output = data.toString();
+    const match = output.match(/your url is: (https:\/\/[^\s]+)/);
+    if (match) {
+      publicUrl = match[1];
+      console.log(`============================================================`);
+      console.log(`🌐 [Public URL Generated]`);
+      console.log(`👉 ${publicUrl}`);
+      console.log(`🔑 [Password (IP)]`);
+      console.log(`👉 ${globalIp}`);
+      console.log(`============================================================`);
+      
+      // 開いているダッシュボードがあればURL情報を通知
+      broadcastToDashboards({
+        type: "tunnel_info",
+        publicUrl: publicUrl,
+        globalIp: globalIp
+      });
+    }
+  });
+
+  tunnelProcess.stderr.on('data', (data) => {
+    console.error(`⚠️ [Tunnel Error] ${data.toString().trim()}`);
+  });
+
+  tunnelProcess.on('close', (code) => {
+    console.log(`🔌 [Tunnel] プロセスが終了しました (Code: ${code})。5秒後に再起動します...`);
+    setTimeout(startTunnel, 5000);
+  });
+}
 
 // 設定
 const BUFFER_DURATION_MS = 3000; // 3秒ごとにバッファをフラッシュ
@@ -27,7 +107,10 @@ const BUFFER_SIZE = SAMPLE_RATE * CHANNELS * BYTES_PER_SAMPLE * (BUFFER_DURATION
 // 状態管理
 const activeStreams = new Map(); // userId -> { buffer, timer, username }
 const knownUsers = new Map(); // userId -> { username, avatarUrl }
+const voiceChannelMembers = new Map(); // userId -> { username, avatarUrl }
+const userLanguages = new Map(); // userId -> 言語コード (例: "ja", "en", "id")
 let currentConnection = null;
+let currentVoiceChannelId = null; // 現在BotがいるVC ID
 let targetLang = "JA";
 
 // ハイブリッド（ローカルクライアント）接続用の状態変数
@@ -61,6 +144,52 @@ if (DEEPL_API_KEY && DEEPL_API_KEY !== "your-deepl-api-key-here") {
 // ダッシュボード用の言語設定
 let dashboardTargetLang = "JA";
 let dashboardDetectLang = "auto";
+
+/**
+ * 現在BotがいるボイスチャンネルのIDを取得する
+ */
+function getCurrentChannelId() {
+  return currentVoiceChannelId;
+}
+
+/**
+ * ボイスチャンネルのメンバーを追加し、全ダッシュボードにブロードキャスト
+ */
+function addVoiceMember(userId, username, avatarUrl) {
+  voiceChannelMembers.set(userId, { username, avatarUrl: avatarUrl || "" });
+  broadcastVoiceMembers();
+}
+
+/**
+ * ボイスチャンネルのメンバーを削除し、全ダッシュボードにブロードキャスト
+ */
+function removeVoiceMember(userId) {
+  voiceChannelMembers.delete(userId);
+  broadcastVoiceMembers();
+}
+
+/**
+ * ボイスチャンネルのメンバー一覧を全ダッシュボードにブロードキャスト
+ */
+function broadcastVoiceMembers() {
+  const members = getVoiceMembersArray();
+  broadcastToDashboards({
+    type: "voice_members_update",
+    members: members
+  });
+}
+
+/**
+ * ボイスチャンネルのメンバー一覧を配列として取得する
+ */
+function getVoiceMembersArray() {
+  return Array.from(voiceChannelMembers.entries()).map(([id, info]) => ({
+    user_id: id,
+    username: info.username,
+    avatar_url: info.avatarUrl,
+    lang: userLanguages.get(id) || "auto"
+  }));
+}
 
 /**
  * ユーザー指定 of カスタムDeepL APIキーで翻訳エンジンを初期化・更新する
@@ -148,20 +277,52 @@ async function translateWithDeepL(text, targetLang, sourceLang) {
 }
 
 /**
+ * 個別ダッシュボード接続用の DeepL 使用状況を更新する
+ */
+async function updateWsUsageCache(ws) {
+  if (!ws.deeplTranslator) return;
+  try {
+    const usage = await ws.deeplTranslator.getUsage();
+    if (usage.character) {
+      const count = usage.character.count;
+      const limit = usage.character.limit;
+      const percent = ((count / limit) * 100).toFixed(1);
+      ws.cachedUsage = { count, limit, percent };
+      ws.send(JSON.stringify({
+        type: "deepl_usage_update",
+        deeplUsage: ws.cachedUsage
+      }));
+    }
+  } catch (err) {
+    console.error("❌ [DeepL Usage] 個別取得失敗:", err.message);
+  }
+}
+
+/**
  * ダッシュボード（ブラウザ）のWebSocket接続をハンドリング
  */
 function handleDashboardConnection(ws) {
   connectedDashboards.add(ws);
   console.log("💻 [Dashboard] ダッシュボードが接続しました");
 
+  // 個別の設定を初期化
+  ws.targetLang = "JA";
+  ws.deeplTranslator = null;
+  ws.cachedUsage = { count: 0, limit: 1000000, percent: "0.0" };
+
   // 初回接続時に現在の各種設定とクライアント情報を送る
   ws.send(JSON.stringify({
     type: "init",
-    targetLang: dashboardTargetLang,
+    targetLang: ws.targetLang, // 個別設定
     detectLang: dashboardDetectLang,
-    deeplUsage: cachedUsage,
+    deeplUsage: ws.cachedUsage || cachedUsage,
     connected: currentConnection !== null,
     isModelLoading: isClientLoading, // 現在モデルロード中かどうかのフラグ
+    voiceMembers: getVoiceMembersArray(), // VCメンバー一覧と個別言語設定
+    tunnelInfo: {
+      publicUrl: publicUrl,
+      globalIp: globalIp
+    },
     clientStatus: {
       hasClient: activeWsClient !== null,
       free_vram_gb: clientFreeVram,
@@ -175,8 +336,8 @@ function handleDashboardConnection(ws) {
       const data = JSON.parse(message.toString());
       
       if (data.type === "change_language" || data.type === "change_target") {
-        dashboardTargetLang = data.lang;
-        console.log(`🌍 [Dashboard] 翻訳先言語を変更: ${dashboardTargetLang}`);
+        ws.targetLang = data.lang; // この接続の翻訳先を更新
+        console.log(`🌍 [Dashboard] 接続固有の翻訳先言語を変更: ${ws.targetLang}`);
       } else if (data.type === "change_detect_lang") {
         dashboardDetectLang = data.lang;
         console.log(`🎤 [Dashboard] 検出言語を変更: ${dashboardDetectLang}`);
@@ -191,8 +352,33 @@ function handleDashboardConnection(ws) {
           console.warn("⚠️ [Dashboard] 接続中のローカルPCクライアントがないため、モデル切り替えを行えません");
         }
       } else if (data.type === "set_deepl_key") {
-        console.log("🔑 [Dashboard] カスタムDeepL APIキーがダッシュボードから送信されました");
-        updateDeepLKey(data.key);
+        console.log("🔑 [Dashboard] 接続固有のカスタムDeepL APIキーを適用します");
+        if (data.key && data.key.trim() !== "") {
+          try {
+            ws.deeplTranslator = new deepl.Translator(data.key.trim());
+            updateWsUsageCache(ws); // 使用量を初期取得
+          } catch (err) {
+            console.error("❌ [DeepL] 個別キーの初期化に失敗:", err.message);
+          }
+        } else {
+          ws.deeplTranslator = null;
+          ws.cachedUsage = { count: 0, limit: 1000000, percent: "0.0" };
+        }
+      } else if (data.type === "set_user_lang") {
+        // ユーザーごとの検出言語設定を更新
+        const userId = data.user_id;
+        const lang = data.lang;
+        if (lang === "auto") {
+          userLanguages.delete(userId);
+        } else {
+          userLanguages.set(userId, lang);
+        }
+        console.log(`🌍 [Dashboard] ユーザー ${userId} の検出言語を変更: ${lang}`);
+        broadcastToDashboards({
+          type: "user_lang_update",
+          user_id: userId,
+          lang: lang
+        });
       }
     } catch (err) {
       console.error("❌ [Dashboard] メッセージ処理エラー:", err);
@@ -311,26 +497,63 @@ function handleHybridConnection(ws) {
 
         console.log(`🎤 [Hybrid] [${data.username}] ${originalText} (${detectedLang})`);
 
-        const currentTargetLang = dashboardTargetLang || targetLang;
-        const tlResult = await translateWithDeepL(originalText, currentTargetLang, null);
+        // 接続されている各ダッシュボード（ブラウザ）へ、個別に翻訳を行って送信する
+        for (const wsDash of connectedDashboards) {
+          if (wsDash.readyState === 1) {
+            // そのダッシュボード固有の希望翻訳言語
+            const currentTargetLang = wsDash.targetLang || targetLang || "JA";
+            
+            // 翻訳元と翻訳先が同一なら翻訳をスキップ
+            const srcPrefix = detectedLang.toLowerCase().substring(0, 2);
+            const tgtPrefix = currentTargetLang.toLowerCase().substring(0, 2);
+            
+            let translatedText = "";
+            let translationSkipped = true;
+            
+            // 優先順位：個別キー -> グローバルカスタムキー -> 環境変数キー
+            const activeTranslator = wsDash.deeplTranslator || customDeeplTranslator || deeplTranslator;
+            
+            if (activeTranslator && srcPrefix !== tgtPrefix) {
+              try {
+                let tl = currentTargetLang.toUpperCase();
+                if (tl === "EN") tl = "EN-US";
+                if (tl === "PT") tl = "PT-BR";
 
-        if (tlResult.translated_text && !tlResult.translation_skipped) {
-          console.log(`   🌐 [DeepL] -> [${currentTargetLang}] ${tlResult.translated_text}`);
+                const result = await activeTranslator.translateText(
+                  originalText,
+                  null,
+                  tl
+                );
+                
+                translatedText = result.text;
+                translationSkipped = false;
+                
+                // 個別キー使用時のみ個別キャッシュをバックグラウンド更新
+                if (wsDash.deeplTranslator) {
+                  updateWsUsageCache(wsDash).catch(() => {});
+                }
+              } catch (err) {
+                console.error(`❌ [DeepL] 個別翻訳エラー: ${err.message}`);
+                translatedText = `[翻訳エラー: ${err.message}]`;
+              }
+            }
+
+            // ダッシュボード固有にカスタマイズされた結果を個別に送信！
+            wsDash.send(JSON.stringify({
+              type: "transcription",
+              user_id: data.user_id,
+              username: data.username,
+              avatar_url: data.avatar_url,
+              original_text: originalText,
+              detected_language: detectedLang,
+              translated_text: translatedText,
+              target_lang: currentTargetLang,
+              translation_skipped: translationSkipped,
+              deepl_usage: wsDash.cachedUsage || cachedUsage,
+              timestamp: data.timestamp || new Date().toLocaleTimeString("ja-JP")
+            }));
+          }
         }
-
-        broadcastToDashboards({
-          type: "transcription",
-          user_id: data.user_id,
-          username: data.username,
-          avatar_url: data.avatar_url,
-          original_text: originalText,
-          detected_language: detectedLang,
-          translated_text: tlResult.translated_text,
-          target_lang: currentTargetLang,
-          translation_skipped: tlResult.translation_skipped,
-          deepl_usage: cachedUsage,
-          timestamp: data.timestamp || new Date().toLocaleTimeString("ja-JP")
-        });
       }
     } catch (err) {
       console.error("❌ [Hybrid] メッセージ処理エラー:", err);
@@ -435,6 +658,36 @@ async function joinChannel(channel, textChannel, _targetLang) {
   }
 
   currentConnection = connection;
+  currentVoiceChannelId = channel.id;
+
+  // VCメンバー一覧を構築してダッシュボードにブロードキャスト
+  voiceChannelMembers.clear();
+  for (const [memberId, member] of channel.members) {
+    if (!member.user.bot) {
+      voiceChannelMembers.set(memberId, {
+        username: member.displayName,
+        avatarUrl: member.displayAvatarURL({ size: 64, extension: "png" }) || ""
+      });
+    }
+  }
+  broadcastVoiceMembers();
+
+  // 🎙️ 共有ダッシュボード案内メッセージをテキストチャンネルに自動投稿
+  if (textChannel) {
+    let msg = `🎙️ **リアルタイム翻訳ダッシュボード**\n\n`;
+    if (publicUrl) {
+      msg += `📊 **共有ダッシュボードURL**\n👉 <${publicUrl}>\n\n`;
+      msg += `🔑 **接続用パスワード（ホストIP）**\n👉 \`${globalIp}\` (初回アクセス時に上の画面に入力してください)\n\n`;
+    } else {
+      const localIp = getLocalIp();
+      msg += `📊 **ローカルダッシュボードURL** (同一Wi-Fiのメンバー用)\n👉 <http://${localIp}:3000>\n\n`;
+    }
+    msg += `※検出言語を制限して精度を上げてください。`;
+
+    textChannel.send(msg).catch(err => {
+      console.error("❌ [Discord] ダッシュボード案内メッセージの自動投稿に失敗:", err.message);
+    });
+  }
 
   connection.receiver.speaking.on("start", (userId) => {
     const state = activeStreams.get(userId);
@@ -466,6 +719,11 @@ function leaveChannel() {
     currentConnection = null;
     console.log("👋 ボイスチャンネルから退出しました");
   }
+
+  // VC退出時にメンバー一覧と状態をクリア
+  currentVoiceChannelId = null;
+  voiceChannelMembers.clear();
+  broadcastVoiceMembers();
 
   broadcastToDashboards({
     type: "voice_status",
@@ -562,7 +820,7 @@ async function flushBuffer(userId) {
       sample_rate: SAMPLE_RATE,
       channels: CHANNELS,
       target_lang: dashboardTargetLang || targetLang,
-      detect_lang: dashboardDetectLang
+      detect_lang: userLanguages.get(userId) || dashboardDetectLang
     }));
   } catch (error) {
     console.error(`❌ [Hybrid] クライアントへの音声送信に失敗: ${error.message}`);
@@ -617,4 +875,8 @@ module.exports = {
   handleHybridConnection,
   hasActiveClient,
   getLastVramError,
+  getCurrentChannelId,
+  addVoiceMember,
+  removeVoiceMember,
+  startTunnel,
 };
