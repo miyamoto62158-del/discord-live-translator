@@ -263,6 +263,14 @@ function handleMessage(data) {
                 }
             }
             break;
+
+        case 'user_auto_lang_update':
+            const memberToUpdate = voiceMembers.find(member => member.user_id === data.user_id);
+            if (memberToUpdate) {
+                memberToUpdate.auto_lang = data.auto_lang;
+                renderVoiceMembers(); // UI表示の自動更新！
+            }
+            break;
     }
 }
 
@@ -618,13 +626,15 @@ function renderVoiceMembers() {
                <div class="member-avatar-fallback" style="background: ${color}; display: none">${initial}</div>`
             : `<div class="member-avatar-fallback" style="background: ${color}">${initial}</div>`;
         
-        // 現在の言語ラベルの構築 (複数言語対応)
-        const activeLangs = (member.lang || 'auto').split(',').filter(x => x);
+        // 現在の言語ラベルの構築 (複数言語対応 & 自動制限の視覚化)
+        const isManual = member.lang && member.lang !== 'auto';
+        const activeLangs = (isManual ? member.lang : (member.auto_lang || 'auto')).split(',').filter(x => x);
+        
         let currentLabel = '';
         if (activeLangs.includes('auto') || activeLangs.length === 0) {
             currentLabel = '🌐 Auto Detect';
         } else {
-            currentLabel = activeLangs.map(val => {
+            const formatted = activeLangs.map(val => {
                 const choice = langChoices.find(c => c.value === val);
                 if (choice) {
                     const flag = choice.label.split(' ')[0]; // 国旗
@@ -632,6 +642,8 @@ function renderVoiceMembers() {
                 }
                 return val.toUpperCase();
             }).join(' + ');
+            
+            currentLabel = isManual ? formatted : `🤖 Auto (${formatted})`;
         }
         
         // 言語選択オプションの構築 (チェックボックス風)

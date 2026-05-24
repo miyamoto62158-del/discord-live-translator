@@ -112,6 +112,7 @@ const voiceChannelMembers = new Map(); // userId -> { username, avatarUrl }
 const userLanguages = new Map(); // userId -> 言語コード (例: "ja", "en", "id")
 const userNoiseThresholds = new Map(); // userId -> しきい値 (例: 200)
 const userLangHistories = new Map(); // userId -> 直近6回の検出言語配列 (例: ["ja", "ja", "en"])
+const userAutoLanguages = new Map(); // userId -> 自動制限された言語コード (例: "ja,en")
 let currentConnection = null;
 let currentVoiceChannelId = null; // 現在BotがいるVC ID
 let targetLang = "JA";
@@ -191,6 +192,7 @@ function getVoiceMembersArray() {
     username: info.username,
     avatar_url: info.avatarUrl,
     lang: userLanguages.get(id) || "auto",
+    auto_lang: userAutoLanguages.get(id) || "",
     threshold: userNoiseThresholds.get(id) ?? NOISE_THRESHOLD_RMS
   }));
 }
@@ -759,6 +761,8 @@ function leaveChannel() {
   // VC退出時にメンバー一覧と状態をクリア
   currentVoiceChannelId = null;
   voiceChannelMembers.clear();
+  userAutoLanguages.clear();
+  userLangHistories.clear();
   broadcastVoiceMembers();
 
   broadcastToDashboards({
@@ -874,8 +878,9 @@ async function flushBuffer(userId) {
 
   // 1. 手動選択された言語制限を取得
   let finalDetectLang = userLanguages.get(userId) || "";
+  let isAutoLimited = false;
 
-  // 2. 手動選択がない(またはauto)かつ過去の認識履歴がある場合、直近20発言の統計から上位2言語を自動適用
+  // 2. 手動選択がない(またはauto)かつ過去の認識履歴がある場合、直近6発言の統計から上位2言語を自動適用
   if ((!finalDetectLang || finalDetectLang === "auto") && userLangHistories.has(userId)) {
     const history = userLangHistories.get(userId) || [];
     if (history.length > 0) {
@@ -888,8 +893,30 @@ async function flushBuffer(userId) {
       const top2Langs = sortedLangs.slice(0, 2);
       if (top2Langs.length > 0) {
         finalDetectLang = top2Langs.join(",");
-        console.log(`🤖 [Auto Lang Limit] ユーザー ${stream.username} の過去履歴から上位2言語を自動制限: [${finalDetectLang}] (履歴数: ${history.length})`);
+        isAutoLimited = true;
+        
+        // 変更があればダッシュボードにブロードキャストしてUI表示を自動更新
+        const oldAutoLang = userAutoLanguages.get(userId);
+        if (oldAutoLang !== finalDetectLang) {
+          userAutoLanguages.set(userId, finalDetectLang);
+          console.log(`🤖 [Auto Lang Limit] ユーザー ${stream.username} の過去履歴から上位2言語を自動制限: [${finalDetectLang}] (履歴数: ${history.length})`);
+          broadcastToDashboards({
+            type: "user_auto_lang_update",
+            user_id: userId,
+            auto_lang: finalDetectLang
+          });
+        }
       }
+    }
+  } else {
+    // 手動制限が適用されているか履歴がない場合は、自動制限状態をクリア
+    if (userAutoLanguages.has(userId)) {
+      userAutoLanguages.delete(userId);
+      broadcastToDashboards({
+        type: "user_auto_lang_update",
+        user_id: userId,
+        auto_lang: ""
+      });
     }
   }
 
