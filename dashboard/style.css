@@ -353,6 +353,8 @@ main {
     overflow-y: auto;
     padding: 20px 24px;
     scroll-behavior: smooth;
+    position: relative;
+    z-index: 10;
 }
 
 /* Scrollbar */
@@ -871,6 +873,8 @@ footer {
     border-bottom: 1px solid var(--border-subtle);
     padding: 6px 20px;
     animation: fadeIn 0.3s ease;
+    position: relative;
+    z-index: 500; /* 重ね合わせ文脈を決定し、チャットのアニメーション突き抜けを防止 */
 }
 
 .voice-members-header {
