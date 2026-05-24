@@ -315,7 +315,7 @@ function handleDashboardConnection(ws) {
     type: "init",
     targetLang: ws.targetLang, // 個別設定
     detectLang: dashboardDetectLang,
-    deeplUsage: ws.cachedUsage || cachedUsage,
+    deeplUsage: ws.deeplTranslator ? ws.cachedUsage : cachedUsage,
     connected: currentConnection !== null,
     isModelLoading: isClientLoading, // 現在モデルロード中かどうかのフラグ
     voiceMembers: getVoiceMembersArray(), // VCメンバー一覧と個別言語設定
@@ -363,6 +363,11 @@ function handleDashboardConnection(ws) {
         } else {
           ws.deeplTranslator = null;
           ws.cachedUsage = { count: 0, limit: 1000000, percent: "0.0" };
+          // 個別キー解除時は、環境変数のグローバルな使用状況を送り返す
+          ws.send(JSON.stringify({
+            type: "deepl_usage_update",
+            deeplUsage: cachedUsage
+          }));
         }
       } else if (data.type === "set_user_lang") {
         // ユーザーごとの検出言語設定を更新
@@ -528,9 +533,11 @@ function handleHybridConnection(ws) {
                 translatedText = result.text;
                 translationSkipped = false;
                 
-                // 個別キー使用時のみ個別キャッシュをバックグラウンド更新
+                // 使用量キャッシュをバックグラウンドで更新
                 if (wsDash.deeplTranslator) {
                   updateWsUsageCache(wsDash).catch(() => {});
+                } else {
+                  updateUsageCache(activeTranslator).catch(() => {});
                 }
               } catch (err) {
                 console.error(`❌ [DeepL] 個別翻訳エラー: ${err.message}`);
