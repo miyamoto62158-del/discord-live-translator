@@ -242,6 +242,27 @@ function handleMessage(data) {
                 }
             }
             break;
+
+        case 'user_threshold_update':
+            const m = voiceMembers.find(member => member.user_id === data.user_id);
+            if (m) {
+                const oldThreshold = m.threshold;
+                m.threshold = data.threshold;
+                
+                // UIのスライダーと数値表示を更新
+                const card = document.querySelector(`.voice-member-card[data-user-id="${data.user_id}"]`);
+                if (card) {
+                    const slider = card.querySelector('.threshold-slider');
+                    const valueDisplay = card.querySelector('.threshold-value');
+                    if (slider) slider.value = data.threshold;
+                    if (valueDisplay) valueDisplay.textContent = data.threshold;
+                }
+                
+                if (oldThreshold !== data.threshold) {
+                    showToast(`${m.username} のノイズしきい値が「${data.threshold}」に更新されました`, 'info');
+                }
+            }
+            break;
     }
 }
 
@@ -624,9 +645,21 @@ function renderVoiceMembers() {
             `;
         }).join('');
         
+        // 現在のしきい値
+        const currentThreshold = member.threshold !== undefined ? member.threshold : 200;
+        
         card.innerHTML = `
             ${avatarHtml}
-            <span class="member-name">${escapeHtml(member.username)}</span>
+            <div class="member-info-column">
+                <span class="member-name">${escapeHtml(member.username)}</span>
+                <div class="member-threshold-container">
+                    <span class="threshold-label" title="音声検出のノイズしきい値（高いと静かなノイズを遮断し、低いと小さな声まで拾います）">
+                        <span>🎚️ ゲートしきい値:</span>
+                        <span class="threshold-value">${currentThreshold}</span>
+                    </span>
+                    <input type="range" class="threshold-slider" min="0" max="900" step="25" value="${currentThreshold}" data-user-id="${member.user_id}">
+                </div>
+            </div>
             <div class="member-lang-select" data-user-id="${member.user_id}">
                 <div class="member-lang-trigger">
                     <span class="member-lang-text">${currentLabel}</span>
@@ -772,6 +805,31 @@ function setupMemberLangSelects() {
                     const userName = memberData ? memberData.username : 'ユーザー';
                     showToast(`${userName} の検出言語を「${displayLabel}」に設定しました`, 'success');
                 }
+            }
+        });
+    });
+
+    // スライダーの入力イベントハンドリング (リアルタイム表示変更 & 変更時のWebSocket送信)
+    document.querySelectorAll('.threshold-slider').forEach(slider => {
+        const userId = slider.getAttribute('data-user-id');
+        const valDisplay = slider.parentElement.querySelector('.threshold-value');
+        
+        slider.addEventListener('input', () => {
+            if (valDisplay) {
+                valDisplay.textContent = slider.value;
+            }
+        });
+        
+        slider.addEventListener('change', () => {
+            const value = parseInt(slider.value, 10);
+            const memberData = voiceMembers.find(m => m.user_id === userId);
+            if (memberData) {
+                memberData.threshold = value;
+            }
+            
+            if (ws && ws.readyState === WebSocket.OPEN) {
+                ws.send(JSON.stringify({ type: 'set_user_threshold', user_id: userId, threshold: value }));
+                console.log(`🎚️ ユーザー ${userId} のしきい値を変更: ${value}`);
             }
         });
     });

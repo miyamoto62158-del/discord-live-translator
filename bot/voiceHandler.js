@@ -103,13 +103,14 @@ const SAMPLE_RATE = 48000;
 const CHANNELS = 1; // モノラル
 const BYTES_PER_SAMPLE = 2; // 16-bit = 2 bytes
 const BUFFER_SIZE = SAMPLE_RATE * CHANNELS * BYTES_PER_SAMPLE * (BUFFER_DURATION_MS / 1000);
-const NOISE_THRESHOLD_RMS = parseInt(process.env.NOISE_THRESHOLD_RMS || "450", 10);
+const NOISE_THRESHOLD_RMS = parseInt(process.env.NOISE_THRESHOLD_RMS || "200", 10);
 
 // 状態管理
 const activeStreams = new Map(); // userId -> { buffer, timer, username }
 const knownUsers = new Map(); // userId -> { username, avatarUrl }
 const voiceChannelMembers = new Map(); // userId -> { username, avatarUrl }
 const userLanguages = new Map(); // userId -> 言語コード (例: "ja", "en", "id")
+const userNoiseThresholds = new Map(); // userId -> しきい値 (例: 200)
 let currentConnection = null;
 let currentVoiceChannelId = null; // 現在BotがいるVC ID
 let targetLang = "JA";
@@ -188,7 +189,8 @@ function getVoiceMembersArray() {
     user_id: id,
     username: info.username,
     avatar_url: info.avatarUrl,
-    lang: userLanguages.get(id) || "auto"
+    lang: userLanguages.get(id) || "auto",
+    threshold: userNoiseThresholds.get(id) ?? NOISE_THRESHOLD_RMS
   }));
 }
 
@@ -385,6 +387,19 @@ function handleDashboardConnection(ws) {
           user_id: userId,
           lang: lang
         });
+      } else if (data.type === "set_user_threshold") {
+        // ユーザーごとのノイズゲートしきい値を更新
+        const userId = data.user_id;
+        const threshold = parseInt(data.threshold, 10);
+        if (!isNaN(threshold)) {
+          userNoiseThresholds.set(userId, threshold);
+          console.log(`🎚️ [Dashboard] ユーザー ${userId} のノイズしきい値を変更: ${threshold}`);
+          broadcastToDashboards({
+            type: "user_threshold_update",
+            user_id: userId,
+            threshold: threshold
+          });
+        }
       }
     } catch (err) {
       console.error("❌ [Dashboard] メッセージ処理エラー:", err);
@@ -835,9 +850,10 @@ async function flushBuffer(userId) {
 
   // 音量（RMS）によるノイズ・無音判定 (ノイズゲート)
   const rms = calculateRMS(audioBuffer);
-  if (rms < NOISE_THRESHOLD_RMS) {
+  const userThreshold = userNoiseThresholds.get(userId) ?? NOISE_THRESHOLD_RMS;
+  if (rms < userThreshold) {
     // 呼吸音や小さな環境音・マイクノイズはスキップして誤翻訳を防ぐ
-    console.log(`🔇 [Noise Gate] 音量が小さいため送信をスキップしました (RMS: ${rms.toFixed(1)} < ${NOISE_THRESHOLD_RMS})`);
+    console.log(`🔇 [Noise Gate] 音量が小さいため送信をスキップしました (RMS: ${rms.toFixed(1)} < ${userThreshold})`);
     return;
   }
 
