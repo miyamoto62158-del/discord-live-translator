@@ -103,6 +103,7 @@ const SAMPLE_RATE = 48000;
 const CHANNELS = 1; // モノラル
 const BYTES_PER_SAMPLE = 2; // 16-bit = 2 bytes
 const BUFFER_SIZE = SAMPLE_RATE * CHANNELS * BYTES_PER_SAMPLE * (BUFFER_DURATION_MS / 1000);
+const NOISE_THRESHOLD_RMS = parseInt(process.env.NOISE_THRESHOLD_RMS || "450", 10);
 
 // 状態管理
 const activeStreams = new Map(); // userId -> { buffer, timer, username }
@@ -794,6 +795,23 @@ function startListening(connection, userId) {
 }
 
 /**
+ * 16-bit PCM バッファの RMS (自乗和平均平方根) を計算し、音量を求める
+ */
+function calculateRMS(buffer) {
+  let sum = 0;
+  const numSamples = buffer.length / 2;
+  if (numSamples === 0) return 0;
+  
+  for (let i = 0; i < buffer.length; i += 2) {
+    if (i + 1 < buffer.length) {
+      const sample = buffer.readInt16LE(i);
+      sum += sample * sample;
+    }
+  }
+  return Math.sqrt(sum / numSamples);
+}
+
+/**
  * バッファをフラッシュしてローカルPCクライアントに送信
  */
 async function flushBuffer(userId) {
@@ -812,6 +830,14 @@ async function flushBuffer(userId) {
   stream.flushTimer = null;
 
   if (audioBuffer.length < 76800) {
+    return;
+  }
+
+  // 音量（RMS）によるノイズ・無音判定 (ノイズゲート)
+  const rms = calculateRMS(audioBuffer);
+  if (rms < NOISE_THRESHOLD_RMS) {
+    // 呼吸音や小さな環境音・マイクノイズはスキップして誤翻訳を防ぐ
+    console.log(`🔇 [Noise Gate] 音量が小さいため送信をスキップしました (RMS: ${rms.toFixed(1)} < ${NOISE_THRESHOLD_RMS})`);
     return;
   }
 
