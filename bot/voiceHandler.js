@@ -103,7 +103,7 @@ const SAMPLE_RATE = 48000;
 const CHANNELS = 1; // モノラル
 const BYTES_PER_SAMPLE = 2; // 16-bit = 2 bytes
 const BUFFER_SIZE = SAMPLE_RATE * CHANNELS * BYTES_PER_SAMPLE * (BUFFER_DURATION_MS / 1000);
-const NOISE_THRESHOLD_RMS = parseInt(process.env.NOISE_THRESHOLD_RMS || "200", 10);
+const NOISE_THRESHOLD_RMS = parseInt(process.env.NOISE_THRESHOLD_RMS || "350", 10);
 
 // 状態管理
 const activeStreams = new Map(); // userId -> { buffer, timer, username }

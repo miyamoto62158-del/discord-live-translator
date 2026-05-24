@@ -646,7 +646,7 @@ function renderVoiceMembers() {
         }).join('');
         
         // 現在のしきい値
-        const currentThreshold = member.threshold !== undefined ? member.threshold : 200;
+        const currentThreshold = member.threshold !== undefined ? member.threshold : 350;
         
         card.innerHTML = `
             ${avatarHtml}

@@ -907,13 +907,13 @@ footer {
     display: flex;
     align-items: center;
     gap: 8px;
-    padding: 4px 8px;
+    padding: 4px 10px;
     background: rgba(26, 26, 40, 0.6);
     border: 1px solid var(--border-subtle);
     border-radius: var(--radius-sm);
     transition: all 0.2s ease;
-    min-width: 250px;
-    height: 34px;
+    min-width: 280px; /* スライダー短縮と名前拡大にあわせて適度な幅に調整 */
+    height: 36px; /* アバターの拡大にあわせて高さを36pxに微調整 */
 }
 
 .voice-member-card:hover {
@@ -927,21 +927,21 @@ footer {
 }
 
 .member-avatar {
-    width: 22px;
-    height: 22px;
+    width: 26px; /* アバターを少し拡大 */
+    height: 26px;
     border-radius: var(--radius-full);
     object-fit: cover;
 }
 
 .member-avatar-fallback {
-    width: 22px;
-    height: 22px;
-    min-width: 22px;
+    width: 26px; /* アバターを少し拡大 */
+    height: 26px;
+    min-width: 26px;
     border-radius: var(--radius-full);
     display: flex;
     align-items: center;
     justify-content: center;
-    font-size: 0.65rem;
+    font-size: 0.72rem;
     font-weight: 700;
     color: white;
 }
@@ -953,7 +953,7 @@ footer {
     white-space: nowrap;
     overflow: hidden;
     text-overflow: ellipsis;
-    max-width: 75px;
+    max-width: 105px; /* 名前がより良く見えるように制限幅を拡大 */
 }
 
 .member-lang-select {
@@ -1189,13 +1189,13 @@ footer {
 }
 
 .threshold-label {
-    font-size: 0.65rem;
+    font-size: 0.8rem; /* 🎚️アイコンサイズを大きくするためフォントサイズアップ */
     color: var(--text-muted);
     font-weight: 600;
     white-space: nowrap;
     display: flex;
     align-items: center;
-    gap: 2px;
+    gap: 3px;
 }
 
 .threshold-value {
@@ -1209,8 +1209,8 @@ footer {
 .threshold-slider {
     -webkit-appearance: none;
     appearance: none;
-    flex: 1;
-    width: 100%;
+    width: 45px; /* スライダーの長さを短く固定 */
+    max-width: 45px;
     height: 3px;
     border-radius: var(--radius-full);
     background: rgba(255, 255, 255, 0.08);
