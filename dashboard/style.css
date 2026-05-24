@@ -866,111 +866,113 @@ footer {
 /* ── Voice Members Panel ── */
 .voice-members-panel {
     flex-shrink: 0;
-    background: rgba(12, 12, 18, 0.6);
+    background: rgba(12, 12, 18, 0.4);
     backdrop-filter: blur(12px);
     border-bottom: 1px solid var(--border-subtle);
-    padding: 10px 24px;
+    padding: 6px 20px;
     animation: fadeIn 0.3s ease;
 }
 
 .voice-members-header {
     display: flex;
     align-items: center;
-    gap: 12px;
-    margin-bottom: 10px;
+    gap: 10px;
+    margin-bottom: 6px;
 }
 
 .voice-members-title {
-    font-size: 0.85rem;
-    font-weight: 600;
-    color: var(--text-primary);
+    font-size: 0.78rem;
+    font-weight: 700;
+    color: var(--text-secondary);
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
 }
 
 .voice-members-hint {
-    font-size: 0.72rem;
+    font-size: 0.68rem;
     color: var(--text-muted);
-    font-style: italic;
 }
 
 .voice-members-list {
     display: flex;
     flex-wrap: wrap;
-    gap: 8px;
+    gap: 6px;
 }
 
 .voice-member-card {
     display: flex;
     align-items: center;
-    gap: 12px;
-    padding: 8px 14px;
-    background: var(--bg-card);
+    gap: 8px;
+    padding: 4px 8px;
+    background: rgba(26, 26, 40, 0.6);
     border: 1px solid var(--border-subtle);
-    border-radius: var(--radius-md);
+    border-radius: var(--radius-sm);
     transition: all 0.2s ease;
-    min-width: 260px; /* スライダーが美しく収まるように広げる */
+    min-width: 250px;
+    height: 34px;
 }
 
 .voice-member-card:hover {
-    border-color: rgba(88, 101, 242, 0.3);
-    background: var(--bg-card-hover);
+    border-color: rgba(88, 101, 242, 0.25);
+    background: rgba(34, 34, 58, 0.8);
 }
 
 .voice-member-card.lang-set {
-    border-color: rgba(87, 242, 135, 0.3);
-    background: rgba(87, 242, 135, 0.05);
+    border-color: rgba(87, 242, 135, 0.2);
+    background: rgba(87, 242, 135, 0.03);
 }
 
 .member-avatar {
-    width: 28px;
-    height: 28px;
+    width: 22px;
+    height: 22px;
     border-radius: var(--radius-full);
     object-fit: cover;
 }
 
 .member-avatar-fallback {
-    width: 28px;
-    height: 28px;
-    min-width: 28px;
+    width: 22px;
+    height: 22px;
+    min-width: 22px;
     border-radius: var(--radius-full);
     display: flex;
     align-items: center;
     justify-content: center;
-    font-size: 0.75rem;
+    font-size: 0.65rem;
     font-weight: 700;
     color: white;
 }
 
 .member-name {
-    font-size: 0.82rem;
-    font-weight: 500;
+    font-size: 0.78rem;
+    font-weight: 600;
     color: var(--text-primary);
     white-space: nowrap;
     overflow: hidden;
     text-overflow: ellipsis;
-    max-width: 100px;
+    max-width: 75px;
 }
 
 .member-lang-select {
     margin-left: auto;
     position: relative;
     user-select: none;
-    min-width: 120px;
-    font-size: 0.78rem;
+    min-width: 90px;
+    font-size: 0.72rem;
 }
 
 .member-lang-trigger {
     display: flex;
     align-items: center;
     justify-content: space-between;
-    padding: 3px 8px;
-    background: rgba(0, 0, 0, 0.3);
+    padding: 2px 6px;
+    background: rgba(0, 0, 0, 0.25);
     border: 1px solid var(--border-subtle);
     border-radius: var(--radius-sm);
     cursor: pointer;
     transition: all 0.2s ease;
-    height: 26px;
+    height: 22px;
     color: var(--text-secondary);
-    gap: 4px;
+    gap: 2px;
 }
 
 .member-lang-trigger:hover {
@@ -985,9 +987,9 @@ footer {
 .member-lang-trigger .arrow {
     width: 0;
     height: 0;
-    border-left: 4px solid transparent;
-    border-right: 4px solid transparent;
-    border-top: 4px solid var(--text-secondary);
+    border-left: 3px solid transparent;
+    border-right: 3px solid transparent;
+    border-top: 3px solid var(--text-secondary);
     transition: transform 0.2s ease;
 }
 
@@ -997,14 +999,14 @@ footer {
 
 .member-lang-options {
     position: absolute;
-    top: calc(100% + 4px);
+    top: calc(100% + 3px);
     left: 0;
     right: 0;
-    background: rgba(47, 49, 54, 0.97);
+    background: rgba(30, 30, 45, 0.98);
     backdrop-filter: blur(12px);
     border: 1px solid var(--border-subtle);
     border-radius: var(--radius-sm);
-    box-shadow: 0 8px 24px rgba(0, 0, 0, 0.5);
+    box-shadow: 0 4px 16px rgba(0, 0, 0, 0.5);
     z-index: 2000;
     opacity: 0;
     visibility: hidden;
@@ -1012,6 +1014,7 @@ footer {
     transition: all 0.15s ease;
     max-height: 200px;
     overflow-y: auto;
+    min-width: 110px;
 }
 
 .member-lang-select.open .member-lang-options {
@@ -1165,78 +1168,83 @@ footer {
 }
 
 /* ── Member Noise Gate Slider ── */
-.member-info-column {
+.member-info-row {
     display: flex;
-    flex-direction: column;
+    align-items: center;
+    gap: 8px;
+    flex: 1;
+    min-width: 0;
+}
+
+.member-threshold-control {
+    display: flex;
+    align-items: center;
     gap: 4px;
     flex: 1;
     min-width: 0;
 }
 
-.member-threshold-container {
-    display: flex;
-    flex-direction: column;
-    gap: 2px;
-    width: 100%;
-}
-
 .threshold-label {
-    font-size: 0.68rem;
+    font-size: 0.65rem;
     color: var(--text-muted);
-    font-weight: 500;
+    font-weight: 600;
+    white-space: nowrap;
     display: flex;
-    justify-content: space-between;
+    align-items: center;
+    gap: 2px;
 }
 
 .threshold-value {
     color: var(--accent-blue);
-    font-weight: 600;
+    font-weight: 700;
     font-family: monospace;
+    min-width: 18px;
+    text-align: right;
 }
 
 .threshold-slider {
     -webkit-appearance: none;
     appearance: none;
+    flex: 1;
     width: 100%;
-    height: 4px;
+    height: 3px;
     border-radius: var(--radius-full);
-    background: rgba(255, 255, 255, 0.1);
+    background: rgba(255, 255, 255, 0.08);
     outline: none;
     transition: background 0.2s;
+    cursor: pointer;
 }
 
 .threshold-slider:hover {
-    background: rgba(255, 255, 255, 0.18);
+    background: rgba(255, 255, 255, 0.15);
 }
 
 .threshold-slider::-webkit-slider-thumb {
     -webkit-appearance: none;
     appearance: none;
-    width: 10px;
-    height: 10px;
+    width: 8px;
+    height: 8px;
     border-radius: var(--radius-full);
     background: var(--accent-blue);
-    cursor: pointer;
     transition: transform 0.1s ease, background 0.1s ease;
 }
 
 .threshold-slider::-webkit-slider-thumb:hover {
-    transform: scale(1.3);
+    transform: scale(1.4);
     background: #7c8aff;
 }
 
 .threshold-slider::-moz-range-thumb {
-    width: 10px;
-    height: 10px;
+    width: 8px;
+    height: 8px;
     border: none;
     border-radius: var(--radius-full);
     background: var(--accent-blue);
-    cursor: pointer;
     transition: transform 0.1s ease, background 0.1s ease;
 }
 
 .threshold-slider::-moz-range-thumb:hover {
-    transform: scale(1.3);
+    transform: scale(1.4);
     background: #7c8aff;
 }
 

@@ -650,13 +650,10 @@ function renderVoiceMembers() {
         
         card.innerHTML = `
             ${avatarHtml}
-            <div class="member-info-column">
-                <span class="member-name">${escapeHtml(member.username)}</span>
-                <div class="member-threshold-container">
-                    <span class="threshold-label" title="音声検出のノイズしきい値（高いと静かなノイズを遮断し、低いと小さな声まで拾います）">
-                        <span>🎚️ ゲートしきい値:</span>
-                        <span class="threshold-value">${currentThreshold}</span>
-                    </span>
+            <div class="member-info-row">
+                <span class="member-name" title="${escapeHtml(member.username)}">${escapeHtml(member.username)}</span>
+                <div class="member-threshold-control">
+                    <span class="threshold-label" title="Noise Gate (音声検出のしきい値。小さい声がカットされる場合は数値を下げてください)">🎚️ <span class="threshold-value">${currentThreshold}</span></span>
                     <input type="range" class="threshold-slider" min="0" max="900" step="25" value="${currentThreshold}" data-user-id="${member.user_id}">
                 </div>
             </div>
