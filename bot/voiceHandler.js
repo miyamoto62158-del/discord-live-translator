@@ -687,13 +687,48 @@ function getLastVramError() {
 async function joinChannel(channel, textChannel, _targetLang) {
   targetLang = _targetLang;
 
-  const connection = joinVoiceChannel({
-    channelId: channel.id,
-    guildId: channel.guild.id,
-    adapterCreator: channel.guild.voiceAdapterCreator,
-    selfDeaf: false,
-    selfMute: true,
-  });
+  const { getVoiceConnection, VoiceConnectionStatus } = require("@discordjs/voice");
+  let connection = getVoiceConnection(channel.guild.id);
+
+  if (connection) {
+    if (connection.state.status !== VoiceConnectionStatus.Destroyed) {
+      if (connection.joinConfig.channelId === channel.id) {
+        console.log(`ℹ️ 既存の音声接続（チャンネルID: ${channel.id}）を再利用します。`);
+        currentConnection = connection;
+        currentVoiceChannelId = channel.id;
+      } else {
+        console.log(`🔄 ボイスチャンネル変更: #${channel.name} へ移動します...`);
+        connection = joinVoiceChannel({
+          channelId: channel.id,
+          guildId: channel.guild.id,
+          adapterCreator: channel.guild.voiceAdapterCreator,
+          selfDeaf: false,
+          selfMute: true,
+        });
+      }
+    } else {
+      console.log(`🧹 破棄済みの音声接続を検知。新規に接続を作成します...`);
+      connection = joinVoiceChannel({
+        channelId: channel.id,
+        guildId: channel.guild.id,
+        adapterCreator: channel.guild.voiceAdapterCreator,
+        selfDeaf: false,
+        selfMute: true,
+      });
+    }
+  } else {
+    connection = joinVoiceChannel({
+      channelId: channel.id,
+      guildId: channel.guild.id,
+      adapterCreator: channel.guild.voiceAdapterCreator,
+      selfDeaf: false,
+      selfMute: true,
+    });
+  }
+
+  // 重複登録を防ぐためにリスナーをクリアしてから再登録
+  connection.removeAllListeners('stateChange');
+  connection.removeAllListeners('error');
 
   connection.on('stateChange', (oldState, newState) => {
     console.log(`🔄 Voice Connection: ${oldState.status} -> ${newState.status}`);
@@ -703,16 +738,7 @@ async function joinChannel(channel, textChannel, _targetLang) {
     console.error('❌ Voice Connection Error:', error);
   });
 
-  const networkStateChangeHandler = (oldNetworkState, newNetworkState) => {
-    const newUdp = Reflect.get(newNetworkState, 'udp');
-    clearInterval(newUdp?.keepAliveInterval);
-  };
-  connection.on('stateChange', (oldState, newState) => {
-    const oldNetworking = Reflect.get(oldState, 'networking');
-    const newNetworking = Reflect.get(newState, 'networking');
-    oldNetworking?.off('stateChange', networkStateChangeHandler);
-    newNetworking?.on('stateChange', networkStateChangeHandler);
-  });
+
 
   try {
     await entersState(connection, VoiceConnectionStatus.Ready, 20_000);
