@@ -134,8 +134,18 @@ client.on("interactionCreate", async (interaction) => {
       missingPermissions.push(...requiredPermissions);
     } else {
       for (const p of requiredPermissions) {
-        if (!permissions.has(p.key)) {
-          missingPermissions.push(p);
+        // [Discord仕様対策] ViewChannelがfalseでも、Connect(接続)がtrueであれば、
+        // 実際にはBotがチャンネルを検知してコマンド応答できているため、接続を許可（フォールバック）する
+        if (p.key === "ViewChannel") {
+          if (!permissions.has("ViewChannel") && !permissions.has("Connect")) {
+            missingPermissions.push(p);
+          } else if (!permissions.has("ViewChannel") && permissions.has("Connect")) {
+            console.log(`⚠️ [Hirom_room] ViewChannelがfalseですが、Connectがtrueのためフォールバック接続を試みます。`);
+          }
+        } else {
+          if (!permissions.has(p.key)) {
+            missingPermissions.push(p);
+          }
         }
       }
     }
@@ -300,7 +310,7 @@ app.post("/api/join", async (req, res) => {
           if (hasHuman) {
             // Bot自身に表示（ViewChannel）および接続（Connect）の権限があるかチェック
             const permissions = channel.permissionsFor(channel.guild.members.me);
-            if (permissions && permissions.has("ViewChannel") && permissions.has("Connect")) {
+            if (permissions && permissions.has("Connect")) {
               targetChannel = channel;
               break;
             }
