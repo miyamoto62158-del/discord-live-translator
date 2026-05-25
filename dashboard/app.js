@@ -84,7 +84,8 @@ const elements = {
     // DeepL設定
     deeplKeyInput: document.getElementById('deepl-key-input'),
     applyKeyBtn: document.getElementById('apply-key-btn'),
-    connectionWarning: document.getElementById('connection-warning')
+    connectionWarning: document.getElementById('connection-warning'),
+    discordChatList: document.getElementById('discord-chat-list')
 };
 
 // ── WebSocket接続 ──
@@ -221,6 +222,10 @@ function handleMessage(data) {
             if (data.deepl_usage) {
                 updateDeepLUsage(data.deepl_usage);
             }
+            break;
+            
+        case 'discord_chat_message':
+            addDiscordChatCard(data);
             break;
             
         case 'voice_members_update':
@@ -909,4 +914,65 @@ function showToast(message, type = 'success') {
     setTimeout(() => {
         toast.remove();
     }, 4300);
+}
+
+// ── Discordチャットカードを追加 ──
+function addDiscordChatCard(data) {
+    if (!elements.discordChatList) return;
+
+    // 「まだメッセージがありません」の初期文をクリア
+    const emptyMsg = elements.discordChatList.querySelector('.chat-empty-message');
+    if (emptyMsg) emptyMsg.remove();
+
+    const card = document.createElement('div');
+    card.className = 'discord-chat-card';
+
+    // ユーザー別のカラーを取得または割り当て
+    if (!userColors[data.username]) {
+        userColors[data.username] = colorPalette[colorIndex % colorPalette.length];
+        colorIndex++;
+    }
+    const color = userColors[data.username];
+    const initial = data.username.charAt(0).toUpperCase();
+
+    const avatarHtml = data.avatar_url
+        ? `<img class="chat-avatar" src="${escapeHtml(data.avatar_url)}" alt="${escapeHtml(data.username)}" onerror="this.style.display='none';this.nextElementSibling.style.display='flex'">
+           <div class="chat-avatar-fallback" style="background: ${color}; display: none">${initial}</div>`
+        : `<div class="chat-avatar-fallback" style="background: ${color}">${initial}</div>`;
+
+    const translationHtml = data.translated_text
+        ? `<div class="chat-translation">
+             <div class="chat-trans-text">${escapeHtml(data.translated_text)}</div>
+           </div>`
+        : `<div class="chat-translation skipped">
+             <div class="chat-trans-text">(翻訳不要またはAPIキー未設定)</div>
+           </div>`;
+
+    card.innerHTML = `
+        <div class="chat-card-top">
+            <div class="chat-avatar-wrapper">${avatarHtml}</div>
+            <div class="chat-meta">
+                <span class="chat-username" style="color: ${color}">${escapeHtml(data.username)}</span>
+                <span class="chat-timestamp">${data.timestamp}</span>
+            </div>
+        </div>
+        <div class="chat-card-body">
+            <div class="chat-original">${escapeHtml(data.original_text)}</div>
+            ${translationHtml}
+        </div>
+    `;
+
+    // 新しいメッセージを一番上に挿入する
+    const firstCard = elements.discordChatList.querySelector('.discord-chat-card');
+    if (firstCard) {
+        elements.discordChatList.insertBefore(card, firstCard);
+    } else {
+        elements.discordChatList.appendChild(card);
+    }
+
+    // 上限30件で古いカードを切り詰める
+    const cards = elements.discordChatList.querySelectorAll('.discord-chat-card');
+    if (cards.length > 30) {
+        cards[cards.length - 1].remove();
+    }
 }
