@@ -75,24 +75,6 @@ const commands = [
 client.once("ready", async () => {
   console.log(`✅ Discord Bot ログイン成功: ${client.user.tag}`);
 
-  // 起動時の残留クリーンアップ：もしギルド内でBot自身がVCに属していたら強制切断する
-  client.guilds.cache.forEach(async (guild) => {
-    try {
-      const botMember = guild.members.me || await guild.members.fetch(client.user.id).catch(() => null);
-      if (botMember && botMember.voice.channelId) {
-        console.log(`🧹 起動クリーンアップ: ギルド「${guild.name}」のボイスチャンネルから残留Botを強制退出させます...`);
-        const { getVoiceConnection } = require("@discordjs/voice");
-        const connection = getVoiceConnection(guild.id);
-        if (connection) {
-          connection.destroy();
-        }
-        await botMember.voice.disconnect().catch(() => {});
-      }
-    } catch (e) {
-      console.error("⚠️ 残留Botクリーンアップ中にエラーが発生しました:", e.message);
-    }
-  });
-
   // スラッシュコマンドを登録
   const rest = new REST({ version: "10" }).setToken(DISCORD_TOKEN);
   try {
