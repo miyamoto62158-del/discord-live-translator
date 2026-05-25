@@ -12,6 +12,10 @@ echo   Discord Live Translator - Startup Launcher
 echo ============================================================
 echo.
 
+echo [0/3] Updating to the latest version from GitHub...
+git pull origin main
+echo.
+
 echo [1/3] Starting Discord Bot and Web Server...
 start "Discord Live Translator - Bot" cmd /k "cd /d %~dp0bot && node index.js"
 
