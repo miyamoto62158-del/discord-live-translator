@@ -406,6 +406,40 @@ server.listen(DASHBOARD_PORT, () => {
   voiceHandler.startTunnel();
 });
 
+// ── Discordテキストチャンネルのチャット監視 ＆ リアルタイム翻訳 ──
+client.on("messageCreate", async (message) => {
+  // Bot自身のメッセージや他のBotのメッセージは無視
+  if (message.author.bot) return;
+
+  // Botが現在参加しているボイスチャンネルと同じサーバー（ギルド）のメッセージのみ対象とする
+  const botVoiceChannelId = voiceHandler.getCurrentChannelId();
+  if (!botVoiceChannelId) return;
+
+  const guild = message.guild;
+  if (!guild) return;
+
+  // Botがボイスチャンネルに参加しているのと同じサーバーであることを確認
+  const botVoiceChannel = guild.channels.cache.get(botVoiceChannelId);
+  if (!botVoiceChannel) return;
+
+  // テキストメッセージの内容を取得して翻訳
+  const text = message.content;
+  if (!text || !text.trim()) return;
+
+  console.log(`💬 [Discord Chat] [${message.author.username}] ${text}`);
+
+  try {
+    // 接続されているダッシュボードごとに個別翻訳して配信する
+    await voiceHandler.handleDiscordChatMessage(
+      message.member?.displayName || message.author.username,
+      message.author.displayAvatarURL({ size: 64, extension: "png" }) || "",
+      text
+    );
+  } catch (err) {
+    console.error("❌ [Discord Chat] 処理または個別配信に失敗:", err.message);
+  }
+});
+
 // ── Botログイン ──
 client.login(DISCORD_TOKEN).catch((error) => {
   console.log("❌ Discord Botのログインに失敗しました:", error.message);

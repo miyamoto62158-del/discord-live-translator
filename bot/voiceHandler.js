@@ -103,7 +103,7 @@ const SAMPLE_RATE = 48000;
 const CHANNELS = 1; // モノラル
 const BYTES_PER_SAMPLE = 2; // 16-bit = 2 bytes
 const BUFFER_SIZE = SAMPLE_RATE * CHANNELS * BYTES_PER_SAMPLE * (BUFFER_DURATION_MS / 1000);
-const NOISE_THRESHOLD_RMS = parseInt(process.env.NOISE_THRESHOLD_RMS || "350", 10);
+const NOISE_THRESHOLD_RMS = parseInt(process.env.NOISE_THRESHOLD_RMS || "300", 10);
 
 // 状態管理
 const activeStreams = new Map(); // userId -> { buffer, timer, username }
@@ -951,30 +951,8 @@ async function flushBuffer(userId) {
   // 1. 手動選択された言語制限を取得
   let finalDetectLang = userLanguages.get(strUserId) || "";
 
-  // 2. 手動選択がない(またはauto)かつ過去の認識履歴がある場合、直近6発言の統計から上位言語を自動適用
-  if ((!finalDetectLang || finalDetectLang === "auto") && userLangHistories.has(strUserId)) {
-    const history = userLangHistories.get(strUserId) || [];
-    if (history.length > 0) {
-      const counts = {};
-      history.forEach(lang => {
-        counts[lang] = (counts[lang] || 0) + 1;
-      });
-      // 出現頻度順にソート
-      const sortedLangs = Object.keys(counts).sort((a, b) => counts[b] - counts[a]);
-      
-      // 【言語ロック対策】特定の1言語（日本語など）に完全にロックされるのを防ぐため、
-      // 履歴から抽出した上位2言語に加えて、常に ja と en を探索可能候補として必ず維持する
-      const activeLangs = new Set(sortedLangs.slice(0, 2));
-      activeLangs.add("ja");
-      activeLangs.add("en");
-      
-      finalDetectLang = Array.from(activeLangs).slice(0, 3).join(","); // 最大3言語に絞って高精度を維持
-      console.log(`🤖 [Auto Lang Limit] ユーザー ${stream.username} の過去履歴から上位言語を自動制限 (ja/enフォールバック込): [${finalDetectLang}] (履歴数: ${history.length})`);
-    }
-  }
-
-  // 3. どちらもない場合はダッシュボードの全体検出設定または "auto"
-  if (!finalDetectLang) {
+  // 2. 手動選択がない(またはauto)場合はダッシュボードの全体検出設定または "auto"
+  if (!finalDetectLang || finalDetectLang === "auto") {
     finalDetectLang = dashboardDetectLang || "auto";
   }
 
@@ -1033,6 +1011,65 @@ function getStatus() {
   };
 }
 
+/**
+ * Discordテキストメッセージをダッシュボードごとに個別翻訳して配信する
+ */
+async function handleDiscordChatMessage(username, avatarUrl, text) {
+  if (!text || !text.trim()) return;
+
+  for (const wsDash of connectedDashboards) {
+    if (wsDash.readyState === 1) {
+      // そのダッシュボード固有の希望翻訳言語
+      const currentTargetLang = wsDash.targetLang || targetLang || "JA";
+      
+      let translatedText = "";
+      let translationSkipped = true;
+      
+      // 優先順位：個別キー -> グローバルカスタムキー -> デフォルトキー
+      const activeTranslator = wsDash.deeplTranslator || customDeeplTranslator || deeplTranslator;
+      
+      if (activeTranslator) {
+        try {
+          let tl = currentTargetLang.toUpperCase();
+          if (tl === "EN") tl = "EN-US";
+          if (tl === "PT") tl = "PT-BR";
+
+          const result = await activeTranslator.translateText(
+            text,
+            null,
+            tl
+          );
+          
+          translatedText = result.text;
+          translationSkipped = false;
+          
+          // 使用量キャッシュをバックグラウンドで更新
+          if (wsDash.deeplTranslator) {
+            updateWsUsageCache(wsDash).catch(() => {});
+          } else {
+            updateUsageCache(activeTranslator).catch(() => {});
+          }
+        } catch (err) {
+          console.error(`❌ [DeepL] Discordチャットの個別翻訳エラー: ${err.message}`);
+          translatedText = `[翻訳エラー: ${err.message}]`;
+        }
+      }
+
+      // ダッシュボード固有に翻訳された結果を送信！
+      wsDash.send(JSON.stringify({
+        type: "discord_chat_message",
+        username: username,
+        avatar_url: avatarUrl,
+        original_text: text,
+        translated_text: translatedText,
+        target_lang: currentTargetLang,
+        translation_skipped: translationSkipped,
+        timestamp: new Date().toLocaleTimeString("ja-JP")
+      }));
+    }
+  }
+}
+
 module.exports = {
   joinChannel,
   leaveChannel,
@@ -1047,4 +1084,7 @@ module.exports = {
   addVoiceMember,
   removeVoiceMember,
   startTunnel,
+  translateWithDeepL,
+  broadcastToDashboards,
+  handleDiscordChatMessage,
 };
