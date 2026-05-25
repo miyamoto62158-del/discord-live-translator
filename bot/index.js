@@ -111,7 +111,23 @@ client.on("interactionCreate", async (interaction) => {
       { key: "UseVAD", label: "音声検出を使用 (Use Voice Activity)", desc: "メンバーの発言を正常に検知し、文字起こしするために必要です 【必須】" }
     ];
 
-    const permissions = voiceChannel.permissionsFor(voiceChannel.guild.members.me);
+    // 複数の判定方法でフォールバックしながら確実に権限を取得する (Discord.jsのキャッシュバグ対策)
+    const meMember = voiceChannel.guild.members.me;
+    const permissions = voiceChannel.permissionsFor(client.user.id) || (meMember ? voiceChannel.permissionsFor(meMember) : null) || voiceChannel.permissionsFor(client.user);
+
+    // コマンドプロンプトに詳細な判定内訳を出力して原因を可視化する
+    console.log(`\n=== 🔍 [Hirom_room] ボイス接続 権限判定デバッグログ ===`);
+    console.log(`Bot ID: ${client.user.id}`);
+    console.log(`GuildMember Me (Botのキャッシュ): ${meMember ? "取得成功" : "取得失敗"}`);
+    console.log(`解決したPermissionsオブジェクト: ${permissions ? "存在します (正常)" : "存在しません (NULL)"}`);
+    if (permissions) {
+      console.log(`• チャンネルを見る (ViewChannel) = ${permissions.has("ViewChannel")}`);
+      console.log(`• 接続 (Connect) = ${permissions.has("Connect")}`);
+      console.log(`• 発言 (Speak) = ${permissions.has("Speak")}`);
+      console.log(`• 音声検出 (UseVAD) = ${permissions.has("UseVAD")}`);
+    }
+    console.log(`====================================================\n`);
+
     const missingPermissions = [];
 
     if (!permissions) {
