@@ -684,11 +684,13 @@ function getLastVramError() {
 /**
  * ボイスチャンネルに参加
  */
-async function joinChannel(channel, textChannel, _targetLang) {
+async function joinChannel(channel, textChannel, _targetLang, retryCount = 0) {
   targetLang = _targetLang;
 
   const { getVoiceConnection, VoiceConnectionStatus } = require("@discordjs/voice");
   let connection = getVoiceConnection(channel.guild.id);
+
+  console.log(`⏳ ボイス接続を開始します... (試行 ${retryCount + 1}/3)`);
 
   if (connection) {
     if (connection.state.status !== VoiceConnectionStatus.Destroyed) {
@@ -731,70 +733,87 @@ async function joinChannel(channel, textChannel, _targetLang) {
   connection.removeAllListeners('error');
 
   connection.on('stateChange', (oldState, newState) => {
-    console.log(`🔄 Voice Connection: ${oldState.status} -> ${newState.status}`);
+    console.log(`🔄 Voice Connection [Try ${retryCount + 1}]: ${oldState.status} -> ${newState.status}`);
   });
 
   connection.on('error', (error) => {
-    console.error('❌ Voice Connection Error:', error);
+    console.error(`❌ Voice Connection Error [Try ${retryCount + 1}]:`, error);
   });
-
-
 
   try {
-    await entersState(connection, VoiceConnectionStatus.Ready, 20_000);
-    console.log(`✅ ボイスチャンネルに参加: #${channel.name}`);
-  } catch (error) {
-    console.error("❌ ボイスチャンネルへの接続に失敗:", error);
-    connection.destroy();
-    throw error;
-  }
+    // タイムアウトを10秒に短縮し、迅速にリトライできるようにする
+    await entersState(connection, VoiceConnectionStatus.Ready, 10_000);
+    console.log(`✅ ボイスチャンネルに参加成功: #${channel.name}`);
+    
+    currentConnection = connection;
+    currentVoiceChannelId = channel.id;
 
-  currentConnection = connection;
-  currentVoiceChannelId = channel.id;
+    // VCメンバー一覧を構築してダッシュボードにブロードキャスト
+    voiceChannelMembers.clear();
+    for (const [memberId, member] of channel.members) {
+      if (!member.user.bot) {
+        voiceChannelMembers.set(memberId, {
+          username: member.displayName,
+          avatarUrl: member.displayAvatarURL({ size: 64, extension: "png" }) || ""
+        });
+      }
+    }
+    broadcastVoiceMembers();
 
-  // VCメンバー一覧を構築してダッシュボードにブロードキャスト
-  voiceChannelMembers.clear();
-  for (const [memberId, member] of channel.members) {
-    if (!member.user.bot) {
-      voiceChannelMembers.set(memberId, {
-        username: member.displayName,
-        avatarUrl: member.displayAvatarURL({ size: 64, extension: "png" }) || ""
+    // 🎙️ 共有ダッシュボード案内メッセージをテキストチャンネルに自動投稿
+    if (textChannel) {
+      let msg = `🎙️ **リアルタイム翻訳ダッシュボード**\n\n`;
+      if (publicUrl) {
+        msg += `📊 **共有ダッシュボードURL**\n👉 <${publicUrl}>\n\n`;
+        msg += `🔑 **接続用パスワード（ホストIP）**\n👉 \`${globalIp}\` (初回アクセス時に上の画面に入力してください)\n\n`;
+      } else {
+        const localIp = getLocalIp();
+        msg += `📊 **ローカルダッシュボードURL** (同一Wi-Fi of メンバー用)\n👉 <http://${localIp}:3000>\n\n`;
+      }
+      msg += `※検出言語を制限して精度を上げてください。`;
+
+      textChannel.send(msg).catch(err => {
+        console.error("❌ [Discord] ダッシュボード案内メッセージの自動投稿に失敗:", err.message);
       });
     }
-  }
-  broadcastVoiceMembers();
 
-  // 🎙️ 共有ダッシュボード案内メッセージをテキストチャンネルに自動投稿
-  if (textChannel) {
-    let msg = `🎙️ **リアルタイム翻訳ダッシュボード**\n\n`;
-    if (publicUrl) {
-      msg += `📊 **共有ダッシュボードURL**\n👉 <${publicUrl}>\n\n`;
-      msg += `🔑 **接続用パスワード（ホストIP）**\n👉 \`${globalIp}\` (初回アクセス時に上の画面に入力してください)\n\n`;
-    } else {
-      const localIp = getLocalIp();
-      msg += `📊 **ローカルダッシュボードURL** (同一Wi-Fiのメンバー用)\n👉 <http://${localIp}:3000>\n\n`;
-    }
-    msg += `※検出言語を制限して精度を上げてください。`;
-
-    textChannel.send(msg).catch(err => {
-      console.error("❌ [Discord] ダッシュボード案内メッセージの自動投稿に失敗:", err.message);
+    connection.receiver.speaking.on("start", (userId) => {
+      const state = activeStreams.get(userId);
+      if (!state || !state.isListening) {
+        startListening(connection, userId);
+      }
     });
-  }
 
-  connection.receiver.speaking.on("start", (userId) => {
-    const state = activeStreams.get(userId);
-    if (!state || !state.isListening) {
-      startListening(connection, userId);
+    broadcastToDashboards({
+      type: "voice_status",
+      connected: true,
+      channelName: channel.name
+    });
+
+    return connection;
+
+  } catch (error) {
+    console.error(`❌ ボイスチャンネルへの接続試行 [${retryCount + 1}/3] が失敗しました:`, error.message);
+    
+    // 接続を安全に破棄
+    try {
+      connection.destroy();
+    } catch (e) {}
+
+    if (retryCount < 2) {
+      const waitTime = (retryCount + 1) * 2000; // 2秒, 4秒と待機時間を増やす（指数バックオフ）
+      console.log(`⏳ ${waitTime / 1000}秒後に再試行します...`);
+      await new Promise(resolve => setTimeout(resolve, waitTime));
+      return joinChannel(channel, textChannel, _targetLang, retryCount + 1);
+    } else {
+      console.error("🚨 すべての接続試行（3回）に失敗しました。");
+      broadcastToDashboards({
+        type: "voice_status",
+        connected: false
+      });
+      throw new Error("ボイスチャンネルへの接続がタイムアウトしました。Discordのゲートウェイ接続またはネットワーク環境（UDPポート等）を確認してください。");
     }
-  });
-
-  broadcastToDashboards({
-    type: "voice_status",
-    connected: true,
-    channelName: channel.name
-  });
-
-  return connection;
+  }
 }
 
 /**
