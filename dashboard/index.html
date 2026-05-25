@@ -89,37 +89,51 @@
         </div>
     </section>
 
-    <!-- メインコンテンツ -->
-    <main id="transcript-container">
-        <!-- 初期メッセージ -->
-        <div id="welcome-message" class="welcome">
-            <div class="welcome-icon">🎙️</div>
-            <h2>準備完了！</h2>
-            <p>Discord上でボイスチャンネルに参加し、チャット欄で以下のコマンドを実行してください。</p>
-            <div style="background: rgba(88, 101, 242, 0.1); border: 1px dashed var(--accent-blue); padding: 12px 30px; border-radius: var(--radius-md); font-family: monospace; font-size: 1.5rem; color: var(--text-accent); margin: 15px 0; font-weight: 700; letter-spacing: 1px; display: inline-block; white-space: pre;">/join </div>
-            <p class="welcome-note">※ コマンド「/join」の後に **半角スペース** を1つ入れて実行してください。<br>※ Botが接続されると、この画面は自動的に会話ログ画面へ切り替わります</p>
+    <!-- メインボディレイアウト -->
+    <div class="dashboard-body-layout">
+        <!-- メインコンテンツ (音声文字起こし) -->
+        <main id="transcript-container">
+            <!-- 初期メッセージ -->
+            <div id="welcome-message" class="welcome">
+                <div class="welcome-icon">🎙️</div>
+                <h2>準備完了！</h2>
+                <p>Discord上でボイスチャンネルに参加し、チャット欄で以下のコマンドを実行してください。</p>
+                <div style="background: rgba(88, 101, 242, 0.1); border: 1px dashed var(--accent-blue); padding: 12px 30px; border-radius: var(--radius-md); font-family: monospace; font-size: 1.5rem; color: var(--text-accent); margin: 15px 0; font-weight: 700; letter-spacing: 1px; display: inline-block; white-space: pre;">/join </div>
+                <p class="welcome-note">※ コマンド「/join」の後に **半角スペース** を1つ入れて実行してください。<br>※ Botが接続されると、この画面は自動的に会話ログ画面へ切り替わります</p>
 
-            <div class="command-help">
-                <h3>📋 コマンド一覧</h3>
-                <div class="command-list">
-                    <div class="command-item">
-                        <span class="cmd-name">🎙️ 参加</span>
-                        <span class="cmd-desc">Botをあなたがいるボイスチャンネルに参加させます</span>
-                    </div>
-                    <div class="command-item">
-                        <span class="cmd-name">👋 退出</span>
-                        <span class="cmd-desc">Botをボイスチャンネルから退出させます</span>
-                    </div>
-                    <div class="command-item">
-                        <span class="cmd-name">🌐 翻訳先</span>
-                        <span class="cmd-desc">右上のセレクタで翻訳先言語を切替えます（リアルタイム反映）</span>
+                <div class="command-help">
+                    <h3>📋 コマンド一覧</h3>
+                    <div class="command-list">
+                        <div class="command-item">
+                            <span class="cmd-name">🎙️ 参加</span>
+                            <span class="cmd-desc">Botをあなたがいるボイスチャンネルに参加させます</span>
+                        </div>
+                        <div class="command-item">
+                            <span class="cmd-name">👋 退出</span>
+                            <span class="cmd-desc">Botをボイスチャンネルから退出させます</span>
+                        </div>
+                        <div class="command-item">
+                            <span class="cmd-name">🌐 翻訳先</span>
+                            <span class="cmd-desc">右上のセレクタで翻訳先言語を切替えます（リアルタイム反映）</span>
+                        </div>
                     </div>
                 </div>
             </div>
-        </div>
 
-        <!-- 発言カードがここに追加される -->
-    </main>
+            <!-- 発言カードがここに追加される -->
+        </main>
+
+        <!-- Discordチャット翻訳パネル (右側) -->
+        <aside id="discord-chat-panel" class="discord-chat-panel">
+            <div class="chat-panel-header">
+                <span class="chat-panel-title">💬 Discord Live Chat (DeepL)</span>
+                <span class="chat-panel-subtitle">テキストチャットの翻訳を表示 (新着順)</span>
+            </div>
+            <div id="discord-chat-list" class="discord-chat-list">
+                <div class="chat-empty-message">Discordのテキストチャンネルにメッセージが投稿されると、ここに即座に翻訳されて表示されます。</div>
+            </div>
+        </aside>
+    </div>
 
     <!-- フッター -->
     <footer id="footer">

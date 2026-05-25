@@ -411,16 +411,9 @@ client.on("messageCreate", async (message) => {
   // Bot自身のメッセージや他のBotのメッセージは無視
   if (message.author.bot) return;
 
-  // Botが現在参加しているボイスチャンネルと同じサーバー（ギルド）のメッセージのみ対象とする
-  const botVoiceChannelId = voiceHandler.getCurrentChannelId();
-  if (!botVoiceChannelId) return;
-
-  const guild = message.guild;
-  if (!guild) return;
-
-  // Botがボイスチャンネルに参加しているのと同じサーバーであることを確認
-  const botVoiceChannel = guild.channels.cache.get(botVoiceChannelId);
-  if (!botVoiceChannel) return;
+  // Botが現在参加しているアクティブなテキストチャンネル以外のメッセージは完全に無視する
+  const activeTextChannelId = voiceHandler.getActiveTextChannelId();
+  if (!activeTextChannelId || message.channel.id !== activeTextChannelId) return;
 
   // テキストメッセージの内容を取得して翻訳
   const text = message.content;

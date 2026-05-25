@@ -114,6 +114,7 @@ const userNoiseThresholds = new Map(); // userId -> しきい値 (例: 200)
 const userLangHistories = new Map(); // userId -> 直近6回の検出言語配列 (例: ["ja", "ja", "en"])
 let currentConnection = null;
 let currentVoiceChannelId = null; // 現在BotがいるVC ID
+let activeTextChannelId = null;   // 現在Botが案内を投稿した/コマンドを受け取ったテキストチャンネルID
 let targetLang = "JA";
 
 // ハイブリッド（ローカルクライアント）接続用の状態変数
@@ -153,6 +154,13 @@ let dashboardDetectLang = "auto";
  */
 function getCurrentChannelId() {
   return currentVoiceChannelId;
+}
+
+/**
+ * 現在Botが紐付いているアクティブなテキストチャンネルのIDを取得する
+ */
+function getActiveTextChannelId() {
+  return activeTextChannelId;
 }
 
 /**
@@ -686,6 +694,7 @@ function getLastVramError() {
  */
 async function joinChannel(channel, textChannel, _targetLang, retryCount = 0) {
   targetLang = _targetLang;
+  activeTextChannelId = textChannel ? textChannel.id : null;
 
   const { getVoiceConnection, VoiceConnectionStatus } = require("@discordjs/voice");
   let connection = getVoiceConnection(channel.guild.id);
@@ -833,6 +842,7 @@ function leaveChannel() {
 
   // VC退出時にメンバー一覧と状態をクリア
   currentVoiceChannelId = null;
+  activeTextChannelId = null;
   voiceChannelMembers.clear();
   broadcastVoiceMembers();
 
@@ -1081,6 +1091,7 @@ module.exports = {
   hasActiveClient,
   getLastVramError,
   getCurrentChannelId,
+  getActiveTextChannelId,
   addVoiceMember,
   removeVoiceMember,
   startTunnel,
