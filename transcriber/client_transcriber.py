@@ -108,10 +108,13 @@ class HybridTranscriberClient:
         """指定されたモデルでASRエンジンをロード"""
         logger.info(f"🤖 ASRモデル [{model_id}] の初期化を開始します...")
         
+        loop = asyncio.get_event_loop()
         if self.engine is None:
             self.engine = ASREngine(model_id=model_id)
+            # スレッドプールで重いモデルロード処理を実行してイベントループのブロッキングを防ぐ
+            await loop.run_in_executor(None, self.engine.load_model)
         else:
-            self.engine.change_model(model_id)
+            await loop.run_in_executor(None, lambda: self.engine.change_model(model_id))
             
         self.current_model_id = model_id
         logger.info(f"✅ ASRモデル [{model_id}] のロードが完了しました")
