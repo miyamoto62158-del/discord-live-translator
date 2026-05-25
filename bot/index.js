@@ -103,6 +103,15 @@ client.on("interactionCreate", async (interaction) => {
       });
     }
 
+    // ── Botのチャンネル表示・接続権限の事前チェック ──
+    const permissions = voiceChannel.permissionsFor(client.user);
+    if (!permissions || !permissions.has("ViewChannel") || !permissions.has("Connect")) {
+      return interaction.reply({
+        content: `❌ **Botがこのチャンネルに参加できません。**\nボイスチャンネル「#${voiceChannel.name}」でBot（またはBotのロール）に **「チャンネルの表示」** および **「接続」** 権限が付与されているかサーバー設定をご確認ください。`,
+        ephemeral: true
+      });
+    }
+
     // ★重要: ローカルPCクライアント（GPU側）が接続されているかチェック
     if (!voiceHandler.hasActiveClient()) {
       const vramErr = voiceHandler.getLastVramError();
@@ -229,8 +238,12 @@ app.post("/api/join", async (req, res) => {
         if (channel.type === 2 && channel.members.size > 0) {
           const hasHuman = channel.members.some((m) => !m.user.bot);
           if (hasHuman) {
-            targetChannel = channel;
-            break;
+            // Bot自身に表示（ViewChannel）および接続（Connect）の権限があるかチェック
+            const permissions = channel.permissionsFor(client.user);
+            if (permissions && permissions.has("ViewChannel") && permissions.has("Connect")) {
+              targetChannel = channel;
+              break;
+            }
           }
         }
       }
