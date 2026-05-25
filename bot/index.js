@@ -103,11 +103,39 @@ client.on("interactionCreate", async (interaction) => {
       });
     }
 
-    // ── Botのチャンネル表示・接続権限の事前チェック ──
+    // ── Botに必要なすべての音声権限リストの事前チェック ──
+    const requiredPermissions = [
+      { key: "ViewChannel", label: "チャンネルを見る (View Channel)", desc: "チャンネルを閲覧・表示するために必要です 【必須】" },
+      { key: "Connect", label: "接続 (Connect)", desc: "ボイスチャンネルに参加するために必要です 【必須】" },
+      { key: "Speak", label: "発言 (Speak)", desc: "音声送信を行わないミュート参加であっても、Discord APIとの接続接続確立に必要です 【必須】" },
+      { key: "UseVAD", label: "音声検出を使用 (Use Voice Activity)", desc: "メンバーの発言を正常に検知し、文字起こしするために必要です 【必須】" }
+    ];
+
     const permissions = voiceChannel.permissionsFor(client.user);
-    if (!permissions || !permissions.has("ViewChannel") || !permissions.has("Connect")) {
+    const missingPermissions = [];
+
+    if (!permissions) {
+      missingPermissions.push(...requiredPermissions);
+    } else {
+      for (const p of requiredPermissions) {
+        if (!permissions.has(p.key)) {
+          missingPermissions.push(p);
+        }
+      }
+    }
+
+    if (missingPermissions.length > 0) {
+      let errContent = `❌ **Botの必要な権限が不足しているため、ボイスチャンネルに参加できません。**\n\n`;
+      errContent += `ボイスチャンネル **#${voiceChannel.name}** の「チャンネルの編集」＞「権限」にて、**Botロール** または **@everyone** に対して以下の権限を **許可（緑のチェックマーク）** に設定してください。\n\n`;
+      
+      missingPermissions.forEach(p => {
+        errContent += `* ❌ **[未許可]** **${p.label}**\n  └ *${p.desc}*\n`;
+      });
+      
+      errContent += `\n※現在「チャンネルを見る」と「接続」が許可されていても、「発言」や「音声検出を使用」が許可されていないとDiscord APIにより接続が拒否されることがあります。`;
+
       return interaction.reply({
-        content: `❌ **Botがこのチャンネルに参加できません。**\nボイスチャンネル「#${voiceChannel.name}」でBot（またはBotのロール）に **「チャンネルの表示」** および **「接続」** 権限が付与されているかサーバー設定をご確認ください。`,
+        content: errContent,
         ephemeral: true
       });
     }
@@ -151,7 +179,23 @@ client.on("interactionCreate", async (interaction) => {
           `🌐 翻訳先言語: ${DEFAULT_TARGET_LANG}`
       );
     } catch (error) {
-      await interaction.editReply(`❌ 参加に失敗しました: ${error.message}`);
+      const permissions = voiceChannel.permissionsFor(client.user);
+      let errMsg = `❌ **ボイスチャンネルへの参加に失敗しました。**\n`;
+      errMsg += `エラー内容: \`${error.message}\`\n\n`;
+      errMsg += `**📢 Discordの音声チャンネル接続に必要なBot権限チェックリスト:**\n`;
+      
+      const checkPerm = (key, label) => {
+        const has = permissions && permissions.has(key);
+        return `${has ? "✅" : "❌ [未許可・設定してください]"} **${label}**`;
+      };
+
+      errMsg += `• ${checkPerm("ViewChannel", "チャンネルを見る (View Channel)")}\n`;
+      errMsg += `• ${checkPerm("Connect", "接続 (Connect)")}\n`;
+      errMsg += `• ${checkPerm("Speak", "発言 (Speak)")}\n`;
+      errMsg += `• ${checkPerm("UseVAD", "音声検出を使用 (Use Voice Activity)")}\n\n`;
+      errMsg += `※ボイスチャンネル **#${voiceChannel.name}** の「チャンネルの編集」＞「権限」から、**Bot（またはBotのロール）**に対して上記4つの権限がすべて「許可（緑のチェック）」になっているか再度ご確認ください。`;
+
+      await interaction.editReply(errMsg);
     }
   }
 
