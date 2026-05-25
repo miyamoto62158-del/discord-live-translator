@@ -111,7 +111,7 @@ client.on("interactionCreate", async (interaction) => {
       { key: "UseVAD", label: "音声検出を使用 (Use Voice Activity)", desc: "メンバーの発言を正常に検知し、文字起こしするために必要です 【必須】" }
     ];
 
-    const permissions = voiceChannel.permissionsFor(client.user);
+    const permissions = voiceChannel.permissionsFor(voiceChannel.guild.members.me);
     const missingPermissions = [];
 
     if (!permissions) {
@@ -179,7 +179,7 @@ client.on("interactionCreate", async (interaction) => {
           `🌐 翻訳先言語: ${DEFAULT_TARGET_LANG}`
       );
     } catch (error) {
-      const permissions = voiceChannel.permissionsFor(client.user);
+      const permissions = voiceChannel.permissionsFor(voiceChannel.guild.members.me);
       let errMsg = `❌ **ボイスチャンネルへの参加に失敗しました。**\n`;
       errMsg += `エラー内容: \`${error.message}\`\n\n`;
       errMsg += `**📢 Discordの音声チャンネル接続に必要なBot権限チェックリスト:**\n`;
@@ -283,7 +283,7 @@ app.post("/api/join", async (req, res) => {
           const hasHuman = channel.members.some((m) => !m.user.bot);
           if (hasHuman) {
             // Bot自身に表示（ViewChannel）および接続（Connect）の権限があるかチェック
-            const permissions = channel.permissionsFor(client.user);
+            const permissions = channel.permissionsFor(channel.guild.members.me);
             if (permissions && permissions.has("ViewChannel") && permissions.has("Connect")) {
               targetChannel = channel;
               break;
