@@ -93,13 +93,13 @@ DEEPL_API_KEY=あなたのDeepL APIキー:fx
 
 ### 手動起動
 
-**ターミナル1: Python Transcriberサーバー**
+**ターミナル1: GPU文字起こしクライアント (Local PC)**
 ```bash
 cd transcriber
-python server.py
+python client_transcriber.py
 ```
 
-**ターミナル2: Discord Bot**
+**ターミナル2: Discord Bot (Cloud or Local Host)**
 ```bash
 cd bot
 node index.js
@@ -287,4 +287,8 @@ const langNames = {
     ...
 };
 ```
+
+## 📄 ライセンス
+
+本プロジェクトは [MIT License](./LICENSE) の下で公開されています。商用・個人利用を問わず、自由に変更・配布が可能です。
 
