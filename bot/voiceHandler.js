@@ -1096,6 +1096,14 @@ async function flushBuffer(userId) {
 
     const rms = calculateRMS(audioBuffer);
     const strUserId = String(userId);
+
+    // ダッシュボードに直近の音量(RMS)を送信
+    broadcastToDashboards({
+      type: "user_volume",
+      user_id: strUserId,
+      rms: Math.round(rms)
+    });
+
     const userThreshold = userNoiseThresholds.get(strUserId) ?? NOISE_THRESHOLD_RMS;
     if (rms < userThreshold) {
       console.log(`🔇 [Gemini Noise Gate] 音量が小さいため送信をスキップしました (RMS: ${rms.toFixed(1)} < ${userThreshold})`);
@@ -1146,6 +1154,14 @@ async function flushBuffer(userId) {
   // 音量（RMS）によるノイズ・無音判定 (ノイズゲート)
   const rms = calculateRMS(audioBuffer);
   const strUserId = String(userId);
+
+  // ダッシュボードに直近の音量(RMS)を送信
+  broadcastToDashboards({
+    type: "user_volume",
+    user_id: strUserId,
+    rms: Math.round(rms)
+  });
+
   const userThreshold = userNoiseThresholds.get(strUserId) ?? NOISE_THRESHOLD_RMS;
   if (rms < userThreshold) {
     // 呼吸音や小さな環境音・マイクノイズはスキップして誤翻訳を防ぐ

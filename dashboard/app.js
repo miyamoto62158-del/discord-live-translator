@@ -138,6 +138,14 @@ function handleMessage(data) {
             if (data.deeplUsage) {
                 updateDeepLUsage(data.deeplUsage);
             }
+            if (isGeminiMode) {
+                if (data.voiceMembers && data.voiceMembers.length > 0) {
+                    voiceMembers = data.voiceMembers;
+                    renderVoiceMembers();
+                }
+                updateVoiceStatus(data.connected);
+                break;
+            }
             if (data.isModelLoading) {
                 isModelLoading = true;
                 if (elements.modelSelectWrapper) {
@@ -166,10 +174,12 @@ function handleMessage(data) {
             break;
             
         case 'client_status_update':
+            if (isGeminiMode) break;
             updateClientStatus(data.clientStatus);
             break;
             
         case 'model_loading':
+            if (isGeminiMode) break;
             // 1. モデルロード中のフラグをセット
             isModelLoading = true;
             if (elements.modelSelectWrapper) {
@@ -191,6 +201,7 @@ function handleMessage(data) {
             break;
             
         case 'model_changed':
+            if (isGeminiMode) break;
             // 1. ロードが完了したため、ガードを解除
             isModelLoading = false;
             if (elements.modelSelectWrapper) {
@@ -270,6 +281,10 @@ function handleMessage(data) {
                 }
             }
             break;
+
+        case 'user_volume':
+            updateUserVolumeDisplay(data.user_id, data.rms);
+            break;
     }
 }
 
@@ -308,6 +323,37 @@ function toggleGeminiMode(isGemini) {
         if (elements.modelSelectWrapper) {
             elements.modelSelectWrapper.classList.remove('disabled');
         }
+    }
+}
+
+// ── 直近のユーザー発言音量(RMS)表示を更新 ──
+function updateUserVolumeDisplay(userId, rms) {
+    const rmsEl = document.querySelector(`.rms-display[data-user-id="${userId}"]`);
+    if (rmsEl) {
+        rmsEl.textContent = `(${rms})`;
+        
+        const card = rmsEl.closest('.voice-member-card');
+        const slider = card ? card.querySelector('.threshold-slider') : null;
+        const threshold = slider ? parseInt(slider.value, 10) : 300;
+        
+        // 閾値を超えていれば緑色で太字、下回るノイズなら薄いグレーにする
+        if (rms >= threshold) {
+            rmsEl.style.color = 'var(--accent-green)';
+            rmsEl.style.fontWeight = '700';
+        } else {
+            rmsEl.style.color = 'var(--text-muted)';
+            rmsEl.style.fontWeight = '500';
+        }
+        
+        // 1.5秒後に自動で非アクティブ状態 (--) に戻す
+        if (rmsEl.timeoutId) {
+            clearTimeout(rmsEl.timeoutId);
+        }
+        rmsEl.timeoutId = setTimeout(() => {
+            rmsEl.textContent = '(--)';
+            rmsEl.style.color = 'var(--text-muted)';
+            rmsEl.style.fontWeight = '500';
+        }, 1500);
     }
 }
 
@@ -706,7 +752,7 @@ function renderVoiceMembers() {
         }).join('');
         
         // 現在のしきい値
-        const currentThreshold = member.threshold !== undefined ? member.threshold : 350;
+        const currentThreshold = member.threshold !== undefined ? member.threshold : 300;
         
         card.innerHTML = `
             ${avatarHtml}
@@ -715,6 +761,7 @@ function renderVoiceMembers() {
                 <div class="member-threshold-control">
                     <span class="threshold-label" title="Noise Gate (音声検出のしきい値。小さい声がカットされる場合は数値を下げてください)">🎚️ <span class="threshold-value">${currentThreshold}</span></span>
                     <input type="range" class="threshold-slider" min="0" max="900" step="25" value="${currentThreshold}" data-user-id="${member.user_id}">
+                    <span class="rms-display" style="font-size: 0.7rem; color: var(--text-muted); font-family: monospace; min-width: 28px; text-align: right;" data-user-id="${member.user_id}" title="直近の発言音量 (RMS) - 喋ると数値が変化します">(--)</span>
                 </div>
             </div>
             <div class="member-lang-select" data-user-id="${member.user_id}">
