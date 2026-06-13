@@ -888,6 +888,60 @@ function mapToBCP47(langCode) {
 }
 
 /**
+ * テキストがフィラー（言い淀み・ノイズ）のみで構成されているか判定する
+ */
+function isFillerOnly(text) {
+  if (!text) return true;
+  
+  // アルファベットを小文字化し、記号やスペースをすべて除去
+  const clean = text.toLowerCase()
+    .replace(/[.,\/\?#!$%\^&\*;:{}=\-_`~()\"\'、。！？\s]/g, "")
+    .trim();
+  
+  if (!clean) return true;
+  
+  // 1. 文字起こし時にAIが出力しがちなノイズ用角括弧タグ (例: [groan], [laughter], (cough) など) の除去・判定
+  if (/^\[[a-z]+\]$/.test(clean) || /^\([a-z]+\)$/.test(clean)) {
+    return true;
+  }
+  
+  // 2. 代表的なフィラー単語リスト
+  const fillers = [
+    "uh", "um", "ah", "oh", "er", "huh", "eh", "hm", "hmm", "ooh",
+    "あ", "え", "う", "お", "ん", "あの", "えっと", "まあ", "ええ",
+    "あー", "えー", "うー", "おー", "んー"
+  ];
+  
+  // 3. 一種類の文字のみの繰り返し (例: "aaaa", "ああああ", "ううう" など) はフィラーと判定
+  const firstChar = clean[0];
+  const isSingleCharRepeat = clean.split("").every(c => c === firstChar);
+  if (isSingleCharRepeat && (firstChar === "a" || firstChar === "u" || firstChar === "o" || firstChar === "e" || firstChar === "h" || "あえうおん".includes(firstChar))) {
+    return true;
+  }
+  
+  // 4. フィラー単語を組み合わせてできた構成かどうかチェック
+  let temp = clean;
+  let matched = true;
+  while (temp.length > 0 && matched) {
+    matched = false;
+    for (const filler of fillers) {
+      if (temp.startsWith(filler)) {
+        temp = temp.slice(filler.length);
+        matched = true;
+        break;
+      }
+    }
+  }
+  
+  // すべてフィラー単語で消化できた場合はフィラーのみと判定
+  if (temp.length === 0) {
+    return true;
+  }
+  
+  return false;
+}
+
+/**
  * 蓄積された文字起こしバッファを確定してダッシュボードに送信
  */
 function sendFinalTranscription(userId) {
@@ -896,6 +950,16 @@ function sendFinalTranscription(userId) {
 
   const finalInput = clientInfo.currentInputText.trim();
   const finalOutput = clientInfo.currentOutputText.trim();
+
+  // 原文と翻訳結果がともに無意味なフィラーのみの場合は、ダッシュボード送信を完全にスキップ
+  if (isFillerOnly(finalInput) && isFillerOnly(finalOutput)) {
+    console.log(`🔇 [Gemini Live API] フィラーのみ検出されたため送信をスキップしました: [原文] "${finalInput}" -> [翻訳] "${finalOutput}"`);
+    // バッファをクリアしてタイマーを解除
+    clientInfo.currentInputText = "";
+    clientInfo.currentOutputText = "";
+    clientInfo.sendTimer = null;
+    return;
+  }
 
   if (finalInput || finalOutput) {
     console.log(`🤖 [Gemini Live API] 確定送信 (User: ${userId}): [原文] ${finalInput} -> [翻訳] ${finalOutput}`);
