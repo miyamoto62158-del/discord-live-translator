@@ -16,12 +16,29 @@ echo [0/3] Updating to the latest version from GitHub...
 git pull origin main
 echo.
 
+:: Check if GEMINI_API_KEY is configured in bot/.env
+set "USE_GEMINI="
+if exist "%~dp0bot\.env" (
+    for /f "usebackq tokens=1,2 delims==" %%A in ("%~dp0bot\.env") do (
+        if "%%A"=="GEMINI_API_KEY" (
+            if not "%%B"=="" if not "%%B"=="your-gemini-api-key-here" (
+                set "USE_GEMINI=true"
+            )
+        )
+    )
+)
+
 echo [1/3] Starting Discord Bot and Web Server...
 start "Discord Live Translator - Bot" cmd /k "cd /d %~dp0bot && node index.js"
 
 echo.
-echo [2/3] Starting GPU Transcriber Client...
-start "Discord Live Translator - Transcriber" cmd /k "cd /d %~dp0 && python transcriber\client_transcriber.py"
+if "%USE_GEMINI%"=="true" (
+    echo [2/3] Gemini Cloud Mode is active (GEMINI_API_KEY detected).
+    echo       Skipping GPU Transcriber Client startup...
+) else (
+    echo [2/3] Starting GPU Transcriber Client...
+    start "Discord Live Translator - Transcriber" cmd /k "cd /d %~dp0 && python transcriber\client_transcriber.py"
+)
 
 echo.
 echo       Waiting for services to initialize (5 seconds)...
