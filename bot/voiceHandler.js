@@ -894,10 +894,12 @@ function getOrCreateGeminiClient(userId) {
   if (!isGeminiMode) return null;
   
   let clientInfo = geminiClients.get(userId);
+  let reconnectAttempts = 0;
   if (clientInfo) {
     if (clientInfo.ws.readyState === WebSocket.OPEN || clientInfo.ws.readyState === WebSocket.CONNECTING) {
       return clientInfo;
     }
+    reconnectAttempts = clientInfo.reconnectAttempts;
   }
 
   console.log(`🔌 [Gemini Live API] ユーザー ${userId} の専用セッションを開始中...`);
@@ -913,7 +915,7 @@ function getOrCreateGeminiClient(userId) {
     isReady: false,
     userId,
     targetLang: geminiLangCode,
-    reconnectAttempts: 0,
+    reconnectAttempts: reconnectAttempts,
     currentInputText: "",
     currentOutputText: ""
   };
@@ -925,9 +927,13 @@ function getOrCreateGeminiClient(userId) {
       setup: {
         model: "models/gemini-3.5-live-translate-preview",
         generationConfig: {
-          responseModalities: ["AUDIO"],
-          inputAudioTranscription: {},
-          outputAudioTranscription: {}
+          responseModalities: ["AUDIO"]
+        },
+        inputAudioTranscription: {
+          enabled: true
+        },
+        outputAudioTranscription: {
+          enabled: true
         },
         translationConfig: {
           targetLanguageCode: geminiLangCode,
@@ -952,6 +958,7 @@ function getOrCreateGeminiClient(userId) {
       if (message.setupComplete) {
         console.log(`✨ [Gemini Live API] ユーザー ${userId} のセットアップが完了し、通訳準備が整いました。`);
         clientInfo.isReady = true;
+        clientInfo.reconnectAttempts = 0;
         return;
       }
 
