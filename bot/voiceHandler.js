@@ -960,7 +960,17 @@ function getOrCreateGeminiClient(userId) {
 
       if (message.serverContent) {
         const serverContent = message.serverContent;
-        console.log(`📨 [Gemini Debug Message] (User: ${userId}):`, JSON.stringify(message.serverContent, null, 2));
+        
+        // 音声データ(Base64)が長いため、デバッグログ出力時に省略表示にします
+        let debugContent = JSON.parse(JSON.stringify(serverContent));
+        if (debugContent.modelTurn && debugContent.modelTurn.parts) {
+          for (let p of debugContent.modelTurn.parts) {
+            if (p.inlineData && p.inlineData.data) {
+              p.inlineData.data = `[Base64 Audio: ${p.inlineData.data.length} bytes]`;
+            }
+          }
+        }
+        console.log(`📨 [Gemini Debug Message] (User: ${userId}):`, JSON.stringify(debugContent, null, 2));
         
         // ユーザーの発言（音声認識結果）を蓄積
         if (serverContent.inputTranscription && serverContent.inputTranscription.text) {
