@@ -907,7 +907,7 @@ function getOrCreateGeminiClient(userId) {
   const userLang = userLanguages.get(userId) || dashboardTargetLang || targetLang || "JA";
   const geminiLangCode = mapToBCP47(userLang);
 
-  const url = `wss://generativelanguage.googleapis.com/ws/google.ai.generativelanguage.v1alpha.GenerativeService.BidiGenerateContent?key=${GEMINI_API_KEY}`;
+  const url = `wss://generativelanguage.googleapis.com/ws/google.ai.generativelanguage.v1beta.GenerativeService.BidiGenerateContent?key=${GEMINI_API_KEY}`;
   const ws = new WebSocket(url);
 
   clientInfo = {
@@ -927,14 +927,14 @@ function getOrCreateGeminiClient(userId) {
       setup: {
         model: "models/gemini-3.5-live-translate-preview",
         generationConfig: {
-          responseModalities: ["AUDIO"],
-          translationConfig: {
-            targetLanguageCode: geminiLangCode,
-            echoTargetLanguage: false
-          }
+          responseModalities: ["AUDIO"]
         },
         inputAudioTranscription: {},
-        outputAudioTranscription: {}
+        outputAudioTranscription: {},
+        translationConfig: {
+          targetLanguageCode: geminiLangCode,
+          echoTargetLanguage: false
+        }
       }
     }));
   });
