@@ -913,7 +913,9 @@ function getOrCreateGeminiClient(userId) {
     isReady: false,
     userId,
     targetLang: geminiLangCode,
-    reconnectAttempts: 0
+    reconnectAttempts: 0,
+    currentInputText: "",
+    currentOutputText: ""
   };
   geminiClients.set(userId, clientInfo);
 
@@ -923,11 +925,13 @@ function getOrCreateGeminiClient(userId) {
       setup: {
         model: "models/gemini-3.5-live-translate-preview",
         generationConfig: {
-          responseModalities: ["TEXT"],
-          translationConfig: {
-            targetLanguageCode: geminiLangCode,
-            echoTargetLanguage: false
-          }
+          responseModalities: ["AUDIO"],
+          inputAudioTranscription: {},
+          outputAudioTranscription: {}
+        },
+        translationConfig: {
+          targetLanguageCode: geminiLangCode,
+          echoTargetLanguage: false
         }
       }
     }));
@@ -937,40 +941,75 @@ function getOrCreateGeminiClient(userId) {
     try {
       const message = JSON.parse(data.toString());
       
+      // エラーまたは警告の検出
+      if (message.error) {
+        console.error(`❌ [Gemini Live API Error] (User: ${userId}):`, JSON.stringify(message.error, null, 2));
+      }
+      if (message.warning) {
+        console.warn(`⚠️ [Gemini Live API Warning] (User: ${userId}):`, JSON.stringify(message.warning, null, 2));
+      }
+      
       if (message.setupComplete) {
         console.log(`✨ [Gemini Live API] ユーザー ${userId} のセットアップが完了し、通訳準備が整いました。`);
         clientInfo.isReady = true;
         return;
       }
 
-      if (message.serverContent && message.serverContent.modelTurn) {
-        const parts = message.serverContent.modelTurn.parts || [];
-        const textParts = parts.filter(p => p.text).map(p => p.text).join("");
+      if (message.serverContent) {
+        const serverContent = message.serverContent;
         
-        if (textParts.trim()) {
-          console.log(`🤖 [Gemini Translate] [${userId}] ${textParts}`);
+        // ユーザーの発言（音声認識結果）を蓄積
+        if (serverContent.inputTranscription && serverContent.inputTranscription.text) {
+          clientInfo.currentInputText += serverContent.inputTranscription.text;
+        }
+        
+        // 翻訳結果のテキストを蓄積
+        if (serverContent.outputTranscription && serverContent.outputTranscription.text) {
+          clientInfo.currentOutputText += serverContent.outputTranscription.text;
+        }
+        
+        // 予備: modelTurn がある場合もマージ
+        if (serverContent.modelTurn && serverContent.modelTurn.parts) {
+          const textParts = serverContent.modelTurn.parts.filter(p => p.text).map(p => p.text).join("");
+          if (textParts) {
+            clientInfo.currentOutputText += textParts;
+          }
+        }
+        
+        // ターンが完了（話し終わった）したらダッシュボードに送信
+        if (serverContent.turnComplete) {
+          const finalInput = clientInfo.currentInputText.trim();
+          const finalOutput = clientInfo.currentOutputText.trim();
           
-          const username = knownUsers.get(userId)?.username || `User_${userId.slice(-4)}`;
-          const avatarUrl = knownUsers.get(userId)?.avatarUrl || "";
-
-          // 各ダッシュボードに送信
-          for (const wsDash of connectedDashboards) {
-            if (wsDash.readyState === 1) {
-              wsDash.send(JSON.stringify({
-                type: "transcription",
-                user_id: userId,
-                username: username,
-                avatar_url: avatarUrl,
-                original_text: "",
-                detected_language: "auto",
-                translated_text: textParts,
-                target_lang: userLang,
-                translation_skipped: false,
-                deepl_usage: wsDash.cachedUsage || cachedUsage,
-                timestamp: new Date().toLocaleTimeString("ja-JP")
-              }));
+          if (finalInput || finalOutput) {
+            console.log(`🤖 [Gemini Live API] ターン完了 (User: ${userId}): [原文] ${finalInput} -> [翻訳] ${finalOutput}`);
+            
+            const username = knownUsers.get(userId)?.username || `User_${userId.slice(-4)}`;
+            const avatarUrl = knownUsers.get(userId)?.avatarUrl || "";
+            
+            // 各ダッシュボードに送信
+            for (const wsDash of connectedDashboards) {
+              if (wsDash.readyState === 1) {
+                wsDash.send(JSON.stringify({
+                  type: "transcription",
+                  user_id: userId,
+                  username: username,
+                  avatar_url: avatarUrl,
+                  original_text: finalInput,
+                  detected_language: "auto",
+                  translated_text: finalOutput,
+                  target_lang: userLang,
+                  translation_skipped: false,
+                  deepl_usage: wsDash.cachedUsage || cachedUsage,
+                  timestamp: new Date().toLocaleTimeString("ja-JP")
+                }));
+              }
             }
           }
+          
+          // バッファをクリア
+          clientInfo.currentInputText = "";
+          clientInfo.currentOutputText = "";
         }
       }
     } catch (err) {

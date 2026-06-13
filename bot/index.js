@@ -167,7 +167,9 @@ client.on("interactionCreate", async (interaction) => {
     }
 
     // ★重要: ローカルPCクライアント（GPU側）が接続されているかチェック
-    if (!voiceHandler.hasActiveClient()) {
+    // ただし、Geminiクラウド翻訳モードが有効な場合はこのチェックをスキップします
+    const status = voiceHandler.getStatus();
+    if (!status.isGeminiMode && !voiceHandler.hasActiveClient()) {
       const vramErr = voiceHandler.getLastVramError();
       let errorMsg = "⚠️ **GPUクライアントが未接続です。**\n\n";
       if (vramErr) {
@@ -303,7 +305,8 @@ app.use(express.json());
 
 app.post("/api/join", async (req, res) => {
   try {
-    if (!voiceHandler.hasActiveClient()) {
+    const status = voiceHandler.getStatus();
+    if (!status.isGeminiMode && !voiceHandler.hasActiveClient()) {
       return res.json({ ok: false, error: "文字起こしクライアントが接続されていません。ローカルクライアントを起動してください。" });
     }
 
