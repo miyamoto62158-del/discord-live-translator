@@ -927,14 +927,14 @@ function getOrCreateGeminiClient(userId) {
       setup: {
         model: "models/gemini-3.5-live-translate-preview",
         generationConfig: {
-          responseModalities: ["AUDIO"]
+          responseModalities: ["AUDIO"],
+          translationConfig: {
+            targetLanguageCode: geminiLangCode,
+            echoTargetLanguage: false
+          }
         },
         inputAudioTranscription: {},
-        outputAudioTranscription: {},
-        translationConfig: {
-          targetLanguageCode: geminiLangCode,
-          echoTargetLanguage: false
-        }
+        outputAudioTranscription: {}
       }
     }));
   });
