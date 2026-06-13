@@ -243,7 +243,12 @@ client.on("interactionCreate", async (interaction) => {
     const status = voiceHandler.getStatus();
     let statusText = "📊 **Bot ステータス**\n";
     statusText += `接続状態: ${status.connected ? "✅ 接続中" : "❌ 未接続"}\n`;
-    statusText += `ローカルGPUクライアント: ${status.hasClient ? "✅ 接続完了 (準備OK)" : "❌ 未接続 (起動してください)"}\n`;
+    if (status.isGeminiMode) {
+      statusText += `翻訳モード: ☁️ Gemini 3.5 クラウド翻訳 (ローカルPC起動不要)\n`;
+    } else {
+      statusText += `翻訳モード: 💻 ハイブリッド (ローカルGPUクライアント)\n`;
+      statusText += `ローカルGPUクライアント: ${status.hasClient ? "✅ 接続完了 (準備OK)" : "❌ 未接続 (起動してください)"}\n`;
+    }
     statusText += `アクティブストリーム: ${status.activeStreams}\n`;
     statusText += `翻訳先言語: ${status.targetLang}\n`;
     statusText += `ダッシュボード: ${DASHBOARD_URL}`;

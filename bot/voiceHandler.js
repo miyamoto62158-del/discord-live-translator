@@ -11,6 +11,7 @@ const deepl = require("deepl-node");
 const { spawn } = require("child_process");
 const https = require("https");
 const os = require("os");
+const WebSocket = require("ws");
 
 const {
   joinVoiceChannel,
@@ -116,6 +117,11 @@ let currentConnection = null;
 let currentVoiceChannelId = null; // 現在BotがいるVC ID
 let activeTextChannelId = null;   // 現在Botが案内を投稿した/コマンドを受け取ったテキストチャンネルID
 let targetLang = "JA";
+
+// Gemini Live API 用の状態管理
+const geminiClients = new Map(); // userId -> clientInfo
+const GEMINI_API_KEY = process.env.GEMINI_API_KEY || "";
+const isGeminiMode = !!GEMINI_API_KEY;
 
 // ハイブリッド（ローカルクライアント）接続用の状態変数
 let activeWsClient = null; // ローカルPC(Transcriberクライアント)のWebSocket
@@ -353,6 +359,7 @@ function handleDashboardConnection(ws) {
     deeplUsage: ws.deeplTranslator ? ws.cachedUsage : cachedUsage,
     connected: currentConnection !== null,
     isModelLoading: isClientLoading, // 現在モデルロード中かどうかのフラグ
+    isGeminiMode: isGeminiMode,
     voiceMembers: getVoiceMembersArray(), // VCメンバー一覧と個別言語設定
     tunnelInfo: {
       publicUrl: publicUrl,
@@ -840,6 +847,14 @@ function leaveChannel() {
     console.log("👋 ボイスチャンネルから退出しました");
   }
 
+  // VC退出時にGeminiクライアントもすべてクリーンアップ
+  for (const [userId, clientInfo] of geminiClients) {
+    try {
+      clientInfo.ws.close();
+    } catch (e) {}
+  }
+  geminiClients.clear();
+
   // VC退出時にメンバー一覧と状態をクリア
   currentVoiceChannelId = null;
   activeTextChannelId = null;
@@ -853,6 +868,142 @@ function leaveChannel() {
 }
 
 /**
+ * 言語コードをGemini APIが解釈可能なBCP-47に変換
+ */
+function mapToBCP47(langCode) {
+  const map = {
+    "JA": "ja",
+    "EN-US": "en",
+    "EN": "en",
+    "KO": "ko",
+    "ZH-HANS": "zh-CN",
+    "ZH-HANT": "zh-TW",
+    "ID": "id",
+    "ES": "es",
+    "FR": "fr",
+    "DE": "de",
+    "RU": "ru"
+  };
+  return map[langCode.toUpperCase()] || "ja";
+}
+
+/**
+ * ユーザー専用のGemini Live API WebSocketクライアントを取得または新規作成
+ */
+function getOrCreateGeminiClient(userId) {
+  if (!isGeminiMode) return null;
+  
+  let clientInfo = geminiClients.get(userId);
+  if (clientInfo) {
+    if (clientInfo.ws.readyState === WebSocket.OPEN || clientInfo.ws.readyState === WebSocket.CONNECTING) {
+      return clientInfo;
+    }
+  }
+
+  console.log(`🔌 [Gemini Live API] ユーザー ${userId} の専用セッションを開始中...`);
+
+  const userLang = userLanguages.get(userId) || dashboardTargetLang || targetLang || "JA";
+  const geminiLangCode = mapToBCP47(userLang);
+
+  const url = `wss://generativelanguage.googleapis.com/ws/google.ai.generativelanguage.v1alpha.GenerativeService.BidiGenerateContent?key=${GEMINI_API_KEY}`;
+  const ws = new WebSocket(url);
+
+  clientInfo = {
+    ws,
+    isReady: false,
+    userId,
+    targetLang: geminiLangCode,
+    reconnectAttempts: 0
+  };
+  geminiClients.set(userId, clientInfo);
+
+  ws.on("open", () => {
+    console.log(`✅ [Gemini Live API] ユーザー ${userId} とのWebSocket接続が確立しました。初期セットアップを送信します...`);
+    ws.send(JSON.stringify({
+      setup: {
+        model: "models/gemini-3.5-live-translate-preview",
+        generationConfig: {
+          responseModalities: ["TEXT"],
+          translationConfig: {
+            targetLanguageCode: geminiLangCode,
+            echoTargetLanguage: false
+          }
+        }
+      }
+    }));
+  });
+
+  ws.on("message", (data) => {
+    try {
+      const message = JSON.parse(data.toString());
+      
+      if (message.setupComplete) {
+        console.log(`✨ [Gemini Live API] ユーザー ${userId} のセットアップが完了し、通訳準備が整いました。`);
+        clientInfo.isReady = true;
+        return;
+      }
+
+      if (message.serverContent && message.serverContent.modelTurn) {
+        const parts = message.serverContent.modelTurn.parts || [];
+        const textParts = parts.filter(p => p.text).map(p => p.text).join("");
+        
+        if (textParts.trim()) {
+          console.log(`🤖 [Gemini Translate] [${userId}] ${textParts}`);
+          
+          const username = knownUsers.get(userId)?.username || `User_${userId.slice(-4)}`;
+          const avatarUrl = knownUsers.get(userId)?.avatarUrl || "";
+
+          // 各ダッシュボードに送信
+          for (const wsDash of connectedDashboards) {
+            if (wsDash.readyState === 1) {
+              wsDash.send(JSON.stringify({
+                type: "transcription",
+                user_id: userId,
+                username: username,
+                avatar_url: avatarUrl,
+                original_text: "",
+                detected_language: "auto",
+                translated_text: textParts,
+                target_lang: userLang,
+                translation_skipped: false,
+                deepl_usage: wsDash.cachedUsage || cachedUsage,
+                timestamp: new Date().toLocaleTimeString("ja-JP")
+              }));
+            }
+          }
+        }
+      }
+    } catch (err) {
+      console.error(`❌ [Gemini Live API] メッセージパースエラー:`, err);
+    }
+  });
+
+  ws.on("close", (code, reason) => {
+    console.log(`🔌 [Gemini Live API] ユーザー ${userId} の接続が切断されました (Code: ${code}, Reason: ${reason})`);
+    clientInfo.isReady = false;
+    
+    // ユーザーがまだVCにいる場合のみ自動再接続
+    const isStillInVC = voiceChannelMembers.has(userId);
+    if (isStillInVC && clientInfo.reconnectAttempts < 5) {
+      const delay = Math.min(1000 * Math.pow(2, clientInfo.reconnectAttempts), 10000);
+      clientInfo.reconnectAttempts++;
+      console.log(`⏳ [Gemini Live API] ${delay}ms 後に ユーザー ${userId} のセッションを自動再接続します... (試行 ${clientInfo.reconnectAttempts})`);
+      setTimeout(() => {
+        getOrCreateGeminiClient(userId);
+      }, delay);
+    } else {
+      geminiClients.delete(userId);
+    }
+  });
+
+  ws.on("error", (err) => {
+    console.error(`❌ [Gemini Live API] エラー (User: ${userId}):`, err.message);
+  });
+
+  return clientInfo;
+}
+
+/**
  * 特定ユーザーの音声リスニングを開始
  */
 function startListening(connection, userId) {
@@ -863,8 +1014,9 @@ function startListening(connection, userId) {
     },
   });
 
+  const sampleRate = isGeminiMode ? 16000 : SAMPLE_RATE;
   const decoder = new prism.opus.Decoder({
-    rate: SAMPLE_RATE,
+    rate: sampleRate,
     channels: CHANNELS,
     frameSize: 960,
   });
@@ -925,11 +1077,56 @@ function calculateRMS(buffer) {
 }
 
 /**
- * バッファをフラッシュしてローカルPCクライアントに送信
+ * バッファをフラッシュしてローカルPCクライアントまたはGemini APIに送信
  */
 async function flushBuffer(userId) {
   const stream = activeStreams.get(userId);
   if (!stream || stream.buffer.length === 0) return;
+
+  if (isGeminiMode) {
+    const audioBuffer = Buffer.from(stream.buffer);
+    stream.buffer = Buffer.alloc(0);
+    stream.lastSendTime = Date.now();
+    stream.flushTimer = null;
+
+    // 16kHz, 16bit PCM mono における最小サイズ制限 (0.8秒分 = 16000 * 2 * 0.8 = 25600 bytes)
+    if (audioBuffer.length < 25600) {
+      return;
+    }
+
+    const rms = calculateRMS(audioBuffer);
+    const strUserId = String(userId);
+    const userThreshold = userNoiseThresholds.get(strUserId) ?? NOISE_THRESHOLD_RMS;
+    if (rms < userThreshold) {
+      console.log(`🔇 [Gemini Noise Gate] 音量が小さいため送信をスキップしました (RMS: ${rms.toFixed(1)} < ${userThreshold})`);
+      return;
+    }
+
+    const clientInfo = getOrCreateGeminiClient(strUserId);
+    if (clientInfo && clientInfo.isReady) {
+      const base64Audio = audioBuffer.toString("base64");
+      try {
+        clientInfo.ws.send(JSON.stringify({
+          realtimeInput: {
+            mediaChunks: [
+              {
+                mimeType: "audio/pcm",
+                data: base64Audio
+              }
+            ]
+          }
+        }));
+      } catch (err) {
+        console.error(`❌ [Gemini Live API] 送信失敗 (User: ${userId}):`, err.message);
+      }
+    } else {
+      // 準備ができていない場合はバッファを一旦戻して待つ (メモリリーク防止のため最大5秒分 = 16000 * 2 * 5 = 160000 bytesまで)
+      if (audioBuffer.length < 160000) {
+        stream.buffer = Buffer.concat([audioBuffer, stream.buffer]);
+      }
+    }
+    return;
+  }
 
   if (!activeWsClient) {
     console.error("❌ [Hybrid] 送信エラー: 接続中のローカルPCクライアントがありません！");
@@ -1012,6 +1209,7 @@ function getStatus() {
     activeStreams: activeStreams.size,
     targetLang: dashboardTargetLang || targetLang,
     hasClient: activeWsClient !== null,
+    isGeminiMode: isGeminiMode,
     deeplUsage: cachedUsage,
     clientStatus: {
       free_vram_gb: clientFreeVram,

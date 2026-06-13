@@ -19,6 +19,7 @@ let autoScroll = true;  // 自動追従フラグ
 let cachedClientStatus = null; // キャッシュされたクライアント情報
 let voiceMembers = []; // 現在VCにいるメンバーの配列
 let isModelLoading = false;    // ASRモデルロード中フラグ
+let isGeminiMode = false;      // Geminiクラウド翻訳モード有効フラグ
 
 const userColors = {};
 const colorPalette = [
@@ -133,6 +134,7 @@ function connect() {
 function handleMessage(data) {
     switch (data.type) {
         case 'init':
+            toggleGeminiMode(data.isGeminiMode);
             if (data.deeplUsage) {
                 updateDeepLUsage(data.deeplUsage);
             }
@@ -271,8 +273,49 @@ function handleMessage(data) {
     }
 }
 
+// ── Geminiクラウドモードのトグル ──
+function toggleGeminiMode(isGemini) {
+    isGeminiMode = !!isGemini;
+    const geminiWarning = document.getElementById('gemini-warning');
+    if (isGeminiMode) {
+        if (geminiWarning) {
+            geminiWarning.classList.add('show');
+        }
+        if (elements.modelSelectWrapper) {
+            elements.modelSelectWrapper.classList.add('disabled');
+        }
+        if (elements.modelSelectText) {
+            elements.modelSelectText.textContent = '☁️ Gemini 3.5 Live';
+        }
+        if (elements.vramInfo) {
+            elements.vramInfo.style.display = 'none';
+        }
+        const welcome = elements.welcome;
+        if (welcome) {
+            const welcomeNote = welcome.querySelector('.welcome-note');
+            if (welcomeNote && !welcomeNote.dataset.geminiModified) {
+                welcomeNote.innerHTML += `<br><span style="color: var(--accent-green); font-weight: bold;">⚡ 現在クラウド翻訳(Gemini)が有効なため、GPUクライアントの起動は不要です！</span>`;
+                welcomeNote.dataset.geminiModified = "true";
+            }
+        }
+    } else {
+        if (geminiWarning) {
+            geminiWarning.classList.remove('show');
+        }
+        if (elements.vramInfo) {
+            elements.vramInfo.style.display = 'inline';
+        }
+        if (elements.modelSelectWrapper) {
+            elements.modelSelectWrapper.classList.remove('disabled');
+        }
+    }
+}
+
 // ── 音声認識クライアント（GPU/モデル）状態の表示更新 ──
 function updateClientStatus(status) {
+    if (isGeminiMode) {
+        return;
+    }
     // モデルロード中の場合は、他のステータスパケットによる画面書き換え（上書き）を完全にシャットアウト
     if (isModelLoading) {
         console.log("⏳ ロード中ロック中のため、ステータス自動更新をスキップします");
