@@ -1069,28 +1069,26 @@ function getOrCreateGeminiClient(userId) {
       if (message.serverContent) {
         const serverContent = message.serverContent;
         
-        // 音声データ(Base64)が長いため、デバッグログ出力時に省略表示にします
-        let debugContent = JSON.parse(JSON.stringify(serverContent));
-        if (debugContent.modelTurn && debugContent.modelTurn.parts) {
-          for (let p of debugContent.modelTurn.parts) {
-            if (p.inlineData && p.inlineData.data) {
-              p.inlineData.data = `[Base64 Audio: ${p.inlineData.data.length} bytes]`;
-            }
-          }
-        }
-        console.log(`📨 [Gemini Debug Message] (User: ${userId}):`, JSON.stringify(debugContent, null, 2));
-        
         let hasNewText = false;
+
+        // 結合処理ヘルパー（アルファベットを含む場合はスペース区切り、日本語などの場合は直接結合）
+        const mergeText = (current, add) => {
+          if (!current) return add;
+          const cleanAdd = add.trim();
+          if (!cleanAdd) return current;
+          const hasAlpha = /[a-zA-Z]/.test(current) || /[a-zA-Z]/.test(cleanAdd);
+          return hasAlpha ? (current + " " + cleanAdd) : (current + cleanAdd);
+        };
 
         // ユーザーの発言（音声認識結果）を蓄積
         if (serverContent.inputTranscription && serverContent.inputTranscription.text) {
-          clientInfo.currentInputText += " " + serverContent.inputTranscription.text;
+          clientInfo.currentInputText = mergeText(clientInfo.currentInputText, serverContent.inputTranscription.text);
           hasNewText = true;
         }
         
         // 翻訳結果のテキストを蓄積
         if (serverContent.outputTranscription && serverContent.outputTranscription.text) {
-          clientInfo.currentOutputText += " " + serverContent.outputTranscription.text;
+          clientInfo.currentOutputText = mergeText(clientInfo.currentOutputText, serverContent.outputTranscription.text);
           hasNewText = true;
         }
         
@@ -1098,7 +1096,7 @@ function getOrCreateGeminiClient(userId) {
         if (serverContent.modelTurn && serverContent.modelTurn.parts) {
           const textParts = serverContent.modelTurn.parts.filter(p => p.text).map(p => p.text).join("");
           if (textParts) {
-            clientInfo.currentOutputText += " " + textParts;
+            clientInfo.currentOutputText = mergeText(clientInfo.currentOutputText, textParts);
             hasNewText = true;
           }
         }
@@ -1110,7 +1108,7 @@ function getOrCreateGeminiClient(userId) {
           }
           clientInfo.sendTimer = setTimeout(() => {
             sendFinalTranscription(userId);
-          }, 1200);
+          }, 1800); // 1.8秒に延長
         }
         
         // ターンが完了（話し終わった）したら即座に送信
