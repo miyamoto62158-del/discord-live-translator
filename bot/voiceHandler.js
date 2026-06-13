@@ -778,6 +778,22 @@ async function joinChannel(channel, textChannel, _targetLang, retryCount = 0) {
 
     // 🎙️ 共有ダッシュボード案内メッセージをテキストチャンネルに自動投稿
     if (textChannel) {
+      // 過去1時間以内のBot自身のメッセージをクリーンアップ
+      try {
+        const oneHourAgo = Date.now() - 60 * 60 * 1000;
+        const fetchedMessages = await textChannel.messages.fetch({ limit: 50 });
+        const botMessages = fetchedMessages.filter(m => 
+          m.author.id === textChannel.client.user.id && 
+          m.createdTimestamp > oneHourAgo
+        );
+        for (const [, m] of botMessages) {
+          await m.delete().catch(() => {});
+        }
+        console.log(`🧹 [Discord] テキストチャンネルの過去1時間以内のBotメッセージ ${botMessages.size} 件をクリーンアップしました。`);
+      } catch (err) {
+        console.warn("⚠️ [Discord] 過去メッセージの自動クリーンアップに失敗しました:", err.message);
+      }
+
       let msg = `🎙️ **リアルタイム翻訳ダッシュボード**\n\n`;
       if (publicUrl) {
         msg += `📊 **共有ダッシュボードURL**\n👉 <${publicUrl}>\n\n`;
