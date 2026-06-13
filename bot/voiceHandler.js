@@ -929,12 +929,8 @@ function getOrCreateGeminiClient(userId) {
         generationConfig: {
           responseModalities: ["AUDIO"]
         },
-        inputAudioTranscription: {
-          enabled: true
-        },
-        outputAudioTranscription: {
-          enabled: true
-        },
+        inputAudioTranscription: {},
+        outputAudioTranscription: {},
         translationConfig: {
           targetLanguageCode: geminiLangCode,
           echoTargetLanguage: false
