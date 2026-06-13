@@ -9,7 +9,7 @@ require("dotenv").config();
 const dns = require("node:dns");
 dns.setDefaultResultOrder("ipv4first"); // Node 17+ の IPv6 解決バグ対策
 
-const { Client, GatewayIntentBits, REST, Routes, SlashCommandBuilder } = require("discord.js");
+const { Client, GatewayIntentBits, REST, Routes, SlashCommandBuilder, MessageFlags } = require("discord.js");
 const express = require("express");
 const http = require("http");
 const { WebSocketServer } = require("ws");
@@ -98,8 +98,8 @@ client.on("interactionCreate", async (interaction) => {
     const voiceChannel = interaction.member?.voice?.channel;
     if (!voiceChannel) {
       return interaction.reply({
-        content: "❌ まずボイスチャンネルに参加してください！",
-        ephemeral: true,
+          content: "❌ まずボイスチャンネルに参加してください！",
+          flags: MessageFlags.Ephemeral,
       });
     }
 
@@ -162,7 +162,7 @@ client.on("interactionCreate", async (interaction) => {
 
       return interaction.reply({
         content: errContent,
-        ephemeral: true
+        flags: MessageFlags.Ephemeral
       });
     }
 
@@ -253,7 +253,7 @@ client.on("interactionCreate", async (interaction) => {
     statusText += `翻訳先言語: ${status.targetLang}\n`;
     statusText += `ダッシュボード: ${DASHBOARD_URL}`;
 
-    await interaction.reply({ content: statusText, ephemeral: true });
+    await interaction.reply({ content: statusText, flags: MessageFlags.Ephemeral });
   }
 });
 
