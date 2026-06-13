@@ -960,6 +960,7 @@ function getOrCreateGeminiClient(userId) {
 
       if (message.serverContent) {
         const serverContent = message.serverContent;
+        console.log(`📨 [Gemini Debug Message] (User: ${userId}):`, JSON.stringify(message.serverContent, null, 2));
         
         // ユーザーの発言（音声認識結果）を蓄積
         if (serverContent.inputTranscription && serverContent.inputTranscription.text) {
