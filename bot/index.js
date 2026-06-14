@@ -229,7 +229,7 @@ client.on("interactionCreate", async (interaction) => {
 
   // /leave コマンド
   if (commandName === "leave") {
-    voiceHandler.leaveChannel();
+    await voiceHandler.leaveChannel(interaction.channel);
     await interaction.reply("👋 ボイスチャンネルから退出しました。");
   }
 

@@ -1470,3 +1470,49 @@ footer {
         height: 400px;
     }
 }
+
+/* ── プレビューカードのプレミアムデザイン ── */
+.transcript-card.preview {
+    opacity: 0.85;
+    border: 1px dashed var(--accent-blue);
+    background: rgba(88, 101, 242, 0.04);
+    animation: borderPulse 2s infinite ease-in-out;
+}
+
+.transcript-card.preview .card-timestamp {
+    color: var(--accent-blue);
+    font-weight: bold;
+    animation: pulseText 1.5s infinite ease-in-out;
+}
+
+@keyframes borderPulse {
+    0% { border-color: rgba(88, 101, 242, 0.2); box-shadow: 0 0 5px rgba(88, 101, 242, 0.05); }
+    50% { border-color: rgba(88, 101, 242, 0.7); box-shadow: 0 0 15px rgba(88, 101, 242, 0.15); }
+    100% { border-color: rgba(88, 101, 242, 0.2); box-shadow: 0 0 5px rgba(88, 101, 242, 0.05); }
+}
+
+@keyframes pulseText {
+    0%, 100% { opacity: 0.6; }
+    50% { opacity: 1; }
+}
+
+/* ── Compact Mode (上部縮小) ── */
+body.compact-mode header {
+    padding: 4px 16px !important;
+    min-height: 38px !important;
+}
+body.compact-mode header .logo h1 {
+    font-size: 0.9rem !important;
+}
+body.compact-mode header .logo-icon {
+    font-size: 1.1rem !important;
+}
+body.compact-mode header .header-right {
+    display: none !important;
+}
+body.compact-mode .voice-members-panel {
+    display: none !important;
+}
+body.compact-mode .connection-warning.gemini-warning {
+    display: none !important;
+}

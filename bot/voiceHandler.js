@@ -58,39 +58,42 @@ function fetchGlobalIp() {
   });
 }
 
-// localtunnel をバックグラウンドで起動し、URLを自動パースする
+// Cloudflare Tunnel をバックグラウンドで起動し、URLを自動パースする
 async function startTunnel() {
   globalIp = await fetchGlobalIp();
-  console.log(`🔑 [Tunnel Password] Host Public IP: ${globalIp}`);
   console.log(`🏠 [Local Network IP] LAN Share: http://${getLocalIp()}:3000`);
 
-  console.log("🔌 [Tunnel] localtunnel を起動しています...");
-  const tunnelProcess = spawn('npx.cmd', ['localtunnel', '--port', '3000'], { shell: true });
+  console.log("🔌 [Tunnel] Cloudflare Tunnel (cloudflared) を起動しています...");
+  // Windows環境なので npx.cmd を使用
+  const tunnelProcess = spawn('npx.cmd', ['cloudflared', 'tunnel', '--url', 'http://localhost:3000'], { shell: true });
   
   tunnelProcess.stdout.on('data', (data) => {
-    const output = data.toString();
-    const match = output.match(/your url is: (https:\/\/[^\s]+)/);
+    handleTunnelOutput(data.toString());
+  });
+
+  tunnelProcess.stderr.on('data', (data) => {
+    handleTunnelOutput(data.toString());
+  });
+
+  function handleTunnelOutput(output) {
+    // trycloudflare.com のURLを検索する
+    const match = output.match(/(https:\/\/[a-zA-Z0-9.-]+\.trycloudflare\.com)/);
     if (match) {
       publicUrl = match[1];
       console.log(`============================================================`);
-      console.log(`🌐 [Public URL Generated]`);
+      console.log(`🌐 [Public URL Generated] (Cloudflare Tunnel - 非常に安定)`);
       console.log(`👉 ${publicUrl}`);
-      console.log(`🔑 [Password (IP)]`);
-      console.log(`👉 ${globalIp}`);
+      console.log(`🔒 (Cloudflare Tunnelは接続時のIPパスワード入力が不要です)`);
       console.log(`============================================================`);
       
-      // 開いているダッシュボードがあればURL情報を通知
+      // 開いているダッシュボードがあればURL情報を通知 (互換性のためにglobalIpも送信)
       broadcastToDashboards({
         type: "tunnel_info",
         publicUrl: publicUrl,
         globalIp: globalIp
       });
     }
-  });
-
-  tunnelProcess.stderr.on('data', (data) => {
-    console.error(`⚠️ [Tunnel Error] ${data.toString().trim()}`);
-  });
+  }
 
   tunnelProcess.on('close', (code) => {
     console.log(`🔌 [Tunnel] プロセスが終了しました (Code: ${code})。5秒後に再起動します...`);
@@ -109,6 +112,7 @@ const NOISE_THRESHOLD_RMS = parseInt(process.env.NOISE_THRESHOLD_RMS || "300", 1
 // 状態管理
 const activeStreams = new Map(); // userId -> { buffer, timer, username }
 const knownUsers = new Map(); // userId -> { username, avatarUrl }
+let chatTranslationQueue = Promise.resolve(); // チャット翻訳の直列（キューイング）実行用 Promise チェーン
 const voiceChannelMembers = new Map(); // userId -> { username, avatarUrl }
 const userLanguages = new Map(); // userId -> 言語コード (例: "ja", "en", "id")
 const userNoiseThresholds = new Map(); // userId -> しきい値 (例: 200)
@@ -117,11 +121,32 @@ let currentConnection = null;
 let currentVoiceChannelId = null; // 現在BotがいるVC ID
 let activeTextChannelId = null;   // 現在Botが案内を投稿した/コマンドを受け取ったテキストチャンネルID
 let targetLang = "JA";
+let discordClient = null;         // Discord client 参照保存用
 
 // Gemini Live API 用の状態管理
 const geminiClients = new Map(); // userId -> clientInfo
 const GEMINI_API_KEY = process.env.GEMINI_API_KEY || "";
 const isGeminiMode = !!GEMINI_API_KEY;
+
+// Gemini Live API プロンプト構築用の言語名英語マッピング
+const langNamesEng = {
+  "JA": "Japanese",
+  "EN": "English",
+  "EN-US": "English",
+  "EN-GB": "English",
+  "KO": "Korean",
+  "ZH": "Chinese",
+  "ZH-CN": "Simplified Chinese",
+  "ZH-TW": "Traditional Chinese",
+  "ID": "Indonesian",
+  "ES": "Spanish",
+  "FR": "French",
+  "DE": "German",
+  "RU": "Russian",
+  "YUE": "Cantonese",
+  "TH": "Thai",
+  "VI": "Vietnamese"
+};
 
 // ハイブリッド（ローカルクライアント）接続用の状態変数
 let activeWsClient = null; // ローカルPC(Transcriberクライアント)のWebSocket
@@ -140,15 +165,17 @@ const DEEPL_API_KEY = process.env.DEEPL_API_KEY || "";
 let deeplTranslator = null;         // 環境変数によるデフォルト
 let customDeeplTranslator = null;   // ユーザー指定のカスタム
 
-// デフォルト初期化
+// デフォルト初期化 (DeepL が無ければ自動で Gemini API を使用)
 if (DEEPL_API_KEY && DEEPL_API_KEY !== "your-deepl-api-key-here") {
   try {
     deeplTranslator = new deepl.Translator(DEEPL_API_KEY);
-    console.log("✅ [DeepL] デフォルトの DeepL 翻訳エンジンを初期化しました");
+    console.log("✅ [DeepL] デフォルトの DeepL 翻訳エンジンを初期化しました。");
     updateUsageCache(deeplTranslator);
   } catch (err) {
-    console.error("❌ [DeepL] デフォルトエンジンの初期化に失敗:", err.message);
+    console.warn("⚠️ [DeepL] 初期化に失敗しました (Gemini API 翻訳を使用します):", err.message);
   }
+} else {
+  console.log("☁️ [Translation Engine] Gemini API 翻訳を使用します (DeepL 未設定)。");
 }
 
 // ダッシュボード用の言語設定
@@ -182,6 +209,30 @@ function addVoiceMember(userId, username, avatarUrl) {
  */
 function removeVoiceMember(userId) {
   voiceChannelMembers.delete(userId);
+
+  const stream = activeStreams.get(userId);
+  if (stream) {
+    if (stream.flushTimer) {
+      clearTimeout(stream.flushTimer);
+    }
+    try {
+      if (stream.opusStream) stream.opusStream.destroy();
+      if (stream.decoder) stream.decoder.destroy();
+    } catch (e) {
+      console.warn(`⚠️ [Discord] ストリーム破棄中にエラーが発生しました (${userId}):`, e.message);
+    }
+    activeStreams.delete(userId);
+  }
+
+  const clientInfo = geminiClients.get(userId);
+  if (clientInfo) {
+    try {
+      if (clientInfo.sendTimer) clearTimeout(clientInfo.sendTimer);
+      clientInfo.ws.close();
+    } catch (e) {}
+    geminiClients.delete(userId);
+  }
+
   broadcastVoiceMembers();
 }
 
@@ -318,6 +369,141 @@ async function translateWithDeepL(text, targetLang, sourceLang) {
 }
 
 /**
+ * Gemini API でテキストを翻訳する (HTTP POST リクエスト、429エラー時の自動リトライ機能付き)
+ */
+async function translateWithGemini(text, targetLang, attempt = 1) {
+  if (!GEMINI_API_KEY) {
+    return { translated_text: "[翻訳スキップ: Gemini APIキーが設定されていません]", translation_skipped: true };
+  }
+  if (!text || !text.trim()) {
+    return { translated_text: "", translation_skipped: true };
+  }
+
+  // BCP-47言語コードへのマッピング（言語名にするのが安全）
+  const langNamesMap = {
+    "JA": "Japanese",
+    "EN-US": "English (US)",
+    "EN": "English",
+    "KO": "Korean",
+    "ZH-HANS": "Simplified Chinese",
+    "ZH-HANT": "Traditional Chinese",
+    "ID": "Indonesian",
+    "ES": "Spanish",
+    "FR": "French",
+    "DE": "German",
+    "RU": "Russian"
+  };
+  const targetLangName = langNamesMap[targetLang.toUpperCase()] || targetLang;
+
+  // gemini-3.1-flash-lite は非常に軽量で消費トークン(TPM)が極めて小さいため、音声通話中のAPIキー制限に干渉せず429エラーを防止できます
+  const url = `https://generativelanguage.googleapis.com/v1beta/models/gemini-3.1-flash-lite:generateContent?key=${GEMINI_API_KEY}`;
+  const payload = {
+    contents: [
+      {
+        parts: [
+          {
+            text: `You are a professional translator. Translate the following text into ${targetLangName}. Only return the translated text without any explanations, notes, or wrapper markdown.\n\nText:\n${text}`
+          }
+        ]
+      }
+    ],
+    generationConfig: {
+      temperature: 0.1
+    }
+  };
+
+  try {
+    const response = await fetch(url, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json"
+      },
+      body: JSON.stringify(payload)
+    });
+
+    if (!response.ok) {
+      const errorText = await response.text().catch(() => "");
+      let errorDetail = "";
+      try {
+        const errJson = JSON.parse(errorText);
+        errorDetail = errJson.error?.message || errorText;
+      } catch (e) {
+        errorDetail = errorText;
+      }
+
+      // 429 (Too Many Requests) の場合、最大3回まで指数バックオフで自動リトライ
+      if (response.status === 429 && attempt <= 3) {
+        const delay = Math.round(Math.pow(1.5, attempt) * 1000); // 1.5s, 2.25s, 3.375s
+        console.warn(`⚠️ [Gemini Translate] 429 レート制限（TPM/RPM等）を検知しました (${errorDetail})。${delay}ms 後にリトライします (試行 ${attempt}/3)...`);
+        await new Promise(resolve => setTimeout(resolve, delay));
+        return translateWithGemini(text, targetLang, attempt + 1);
+      }
+      throw new Error(`HTTP error! status: ${response.status}, detail: ${errorDetail}`);
+    }
+
+    const data = await response.json();
+    if (data.candidates && data.candidates[0]?.content?.parts[0]?.text) {
+      const translated = data.candidates[0].content.parts[0].text.trim();
+      return {
+        translated_text: translated,
+        translation_skipped: false
+      };
+    } else {
+      throw new Error("Invalid response format from Gemini API");
+    }
+  } catch (err) {
+    console.error(`❌ [Gemini Translate] 翻訳エラー (試行 ${attempt}/3): ${err.message}`);
+    return { translated_text: `[翻訳エラー: ${err.message}]`, translation_skipped: true };
+  }
+}
+
+/**
+ * 接続されているダッシュボードの希望言語を集計し、
+ * 最も多く選択されている言語を全体の dashboardTargetLang として自動適用する。
+ * 全体の翻訳先が変更された場合は、Gemini Live API セッションをリセットする。
+ */
+function updateGlobalTargetLang() {
+  if (connectedDashboards.size === 0) return;
+
+  const counts = {};
+  for (const ws of connectedDashboards) {
+    const lang = ws.targetLang || "JA";
+    counts[lang] = (counts[lang] || 0) + 1;
+  }
+
+  // 最頻値を取得。同数の場合は現在の dashboardTargetLang を優先
+  let bestLang = dashboardTargetLang || "JA";
+  let maxCount = 0;
+
+  for (const lang of Object.keys(counts)) {
+    if (counts[lang] > maxCount) {
+      maxCount = counts[lang];
+      bestLang = lang;
+    } else if (counts[lang] === maxCount && lang === dashboardTargetLang) {
+      bestLang = lang;
+    }
+  }
+
+  if (bestLang !== dashboardTargetLang) {
+    console.log(`🔄 [Language Router] 全体の代表翻訳先言語を ${dashboardTargetLang} から ${bestLang} に切り替えます (多数決)。`);
+    dashboardTargetLang = bestLang;
+
+    // Geminiクラウド翻訳モードのとき、全体翻訳先が変わったら
+    // 既存のすべての Gemini セッションをリセットし、新しい言語で再セットアップさせる
+    if (isGeminiMode) {
+      console.log(`🔄 [Gemini Live API] 全体翻訳先の変更に伴い、すべてのアクティブセッションをリセットします。`);
+      for (const [uid, clientInfo] of geminiClients) {
+        try {
+          if (clientInfo.sendTimer) clearTimeout(clientInfo.sendTimer);
+          clientInfo.ws.close();
+        } catch (e) {}
+      }
+      geminiClients.clear();
+    }
+  }
+}
+
+/**
  * 個別ダッシュボード接続用の DeepL 使用状況を更新する
  */
 async function updateWsUsageCache(ws) {
@@ -380,6 +566,9 @@ function handleDashboardConnection(ws) {
       if (data.type === "change_language" || data.type === "change_target") {
         ws.targetLang = data.lang; // この接続の翻訳先を更新
         console.log(`🌍 [Dashboard] 接続固有の翻訳先言語を変更: ${ws.targetLang}`);
+        
+        // 全体の代表翻訳先言語を再計算
+        updateGlobalTargetLang();
       } else if (data.type === "change_detect_lang") {
         dashboardDetectLang = data.lang;
         console.log(`🎤 [Dashboard] 検出言語を変更: ${dashboardDetectLang}`);
@@ -421,6 +610,20 @@ function handleDashboardConnection(ws) {
           userLanguages.set(userId, lang);
         }
         console.log(`🌍 [Dashboard] ユーザー ${userId} の検出言語を変更: ${lang}`);
+        
+        // 既存 of 稼働中セッションがあればクローズして削除（次回発話時に新しい言語設定で再セットアップさせるため）
+        const clientInfo = geminiClients.get(userId);
+        if (clientInfo) {
+          console.log(`🔄 [Gemini Live API] ユーザー ${userId} の検出言語変更に伴い、セッションをリセットします。`);
+          try {
+            if (clientInfo.sendTimer) clearTimeout(clientInfo.sendTimer);
+            clientInfo.ws.close();
+          } catch (e) {
+            console.error(`❌ [Gemini Live API] ユーザー ${userId} のセッションクローズエラー:`, e.message);
+          }
+          geminiClients.delete(userId);
+        }
+
         broadcastToDashboards({
           type: "user_lang_update",
           user_id: userId,
@@ -452,6 +655,9 @@ function handleDashboardConnection(ws) {
   ws.on("close", () => {
     connectedDashboards.delete(ws);
     console.log("💻 [Dashboard] ダッシュボードが切断されました");
+    
+    // 全体の代表翻訳先言語を再計算
+    updateGlobalTargetLang();
   });
 
   ws.on("error", (err) => {
@@ -702,6 +908,9 @@ function getLastVramError() {
 async function joinChannel(channel, textChannel, _targetLang, retryCount = 0) {
   targetLang = _targetLang;
   activeTextChannelId = textChannel ? textChannel.id : null;
+  if (textChannel) {
+    discordClient = textChannel.client;
+  }
 
   const { getVoiceConnection, VoiceConnectionStatus } = require("@discordjs/voice");
   let connection = getVoiceConnection(channel.guild.id);
@@ -778,18 +987,18 @@ async function joinChannel(channel, textChannel, _targetLang, retryCount = 0) {
 
     // 🎙️ 共有ダッシュボード案内メッセージをテキストチャンネルに自動投稿
     if (textChannel) {
-      // 過去1時間以内のBot自身のメッセージをクリーンアップ
+      // テキストチャンネル内のBot自身の過去のすべてのメッセージをクリーンアップ
       try {
-        const oneHourAgo = Date.now() - 60 * 60 * 1000;
-        const fetchedMessages = await textChannel.messages.fetch({ limit: 50 });
+        const fetchedMessages = await textChannel.messages.fetch({ limit: 100 });
+        const now = Date.now();
         const botMessages = fetchedMessages.filter(m => 
           m.author.id === textChannel.client.user.id && 
-          m.createdTimestamp > oneHourAgo
+          (now - m.createdTimestamp) > 15000 // 作成から15秒以上経っているもののみ削除（現在実行中のdeferReply誤消去を防ぐため）
         );
         for (const [, m] of botMessages) {
           await m.delete().catch(() => {});
         }
-        console.log(`🧹 [Discord] テキストチャンネルの過去1時間以内のBotメッセージ ${botMessages.size} 件をクリーンアップしました。`);
+        console.log(`🧹 [Discord] テキストチャンネルの過去のBotメッセージ ${botMessages.size} 件をクリーンアップしました。`);
       } catch (err) {
         console.warn("⚠️ [Discord] 過去メッセージの自動クリーンアップに失敗しました:", err.message);
       }
@@ -851,9 +1060,38 @@ async function joinChannel(channel, textChannel, _targetLang, retryCount = 0) {
 /**
  * ボイスチャンネルから退出
  */
-function leaveChannel() {
+async function leaveChannel(textChannel = null) {
+  // 引数またはグローバル情報からクリーンアップ対象のテキストチャンネルを取得
+  const targetChannel = textChannel || (discordClient && activeTextChannelId ? await discordClient.channels.fetch(activeTextChannelId).catch(() => null) : null);
+
+  if (targetChannel) {
+    try {
+      const fetchedMessages = await targetChannel.messages.fetch({ limit: 100 });
+      const now = Date.now();
+      const clientUserId = targetChannel.client?.user?.id || (discordClient && discordClient.user?.id);
+      if (clientUserId) {
+        const botMessages = fetchedMessages.filter(m => 
+          m.author.id === clientUserId && 
+          (now - m.createdTimestamp) > 15000 // 作成から15秒以上経っているもののみ削除
+        );
+        for (const [, m] of botMessages) {
+          await m.delete().catch(() => {});
+        }
+        console.log(`🧹 [Discord] leave時のメッセージクリーンアップ完了 (${botMessages.size} 件)`);
+      }
+    } catch (err) {
+      console.warn("⚠️ [Discord] leave時のクリーンアップに失敗しました:", err.message);
+    }
+  }
+
   for (const [userId, stream] of activeStreams) {
-    clearInterval(stream.timer);
+    if (stream.flushTimer) {
+      clearTimeout(stream.flushTimer);
+    }
+    try {
+      if (stream.opusStream) stream.opusStream.destroy();
+      if (stream.decoder) stream.decoder.destroy();
+    } catch (e) {}
   }
   activeStreams.clear();
 
@@ -866,6 +1104,7 @@ function leaveChannel() {
   // VC退出時にGeminiクライアントもすべてクリーンアップ
   for (const [userId, clientInfo] of geminiClients) {
     try {
+      if (clientInfo.sendTimer) clearTimeout(clientInfo.sendTimer);
       clientInfo.ws.close();
     } catch (e) {}
   }
@@ -958,11 +1197,68 @@ function isFillerOnly(text) {
 }
 
 /**
- * 蓄積された文字起こしバッファを確定してダッシュボードに送信
+ * 話している最中の途中経過（プレビュー）をダッシュボードにリアルタイム配信
  */
-function sendFinalTranscription(userId) {
+function sendTranscriptionPreview(userId) {
   const clientInfo = geminiClients.get(userId);
   if (!clientInfo) return;
+
+  const previewInput = clientInfo.currentInputText.trim();
+  const previewOutput = clientInfo.currentOutputText.trim();
+
+  // フィラーのみの場合は送信を制限（メーター等の無駄な点滅を防ぐため）
+  if (!previewInput && !previewOutput) return;
+
+  const username = knownUsers.get(userId)?.username || `User_${userId.slice(-4)}`;
+  const avatarUrl = knownUsers.get(userId)?.avatarUrl || "";
+
+  // 各ダッシュボードに個別送信
+  for (const wsDash of connectedDashboards) {
+    if (wsDash.readyState === 1) {
+      const currentTargetLang = wsDash.targetLang || targetLang || "JA";
+      
+      // 希望言語が全体の翻訳先と同じならプレビュー翻訳を表示、異なるならプレビュー段階では翻訳を表示しない (API負荷軽減)
+      const isSameAsDefault = currentTargetLang.toLowerCase().substring(0, 2) === (dashboardTargetLang || "JA").toLowerCase().substring(0, 2);
+      const translatedText = isSameAsDefault ? previewOutput : "";
+
+      wsDash.send(JSON.stringify({
+        type: "transcription_preview",
+        user_id: userId,
+        username: username,
+        avatar_url: avatarUrl,
+        original_text: previewInput,
+        translated_text: translatedText,
+        target_lang: currentTargetLang
+      }));
+    }
+  }
+}
+
+/**
+ * 蓄積された文字起こしバッファを確定してダッシュボードに送信
+ */
+async function sendFinalTranscription(userId) {
+  const clientInfo = geminiClients.get(userId);
+  if (!clientInfo) return;
+
+  const stream = activeStreams.get(userId);
+  if (stream) {
+    const now = Date.now();
+    const lastSpeech = stream.lastSpeechTime || 0;
+    const elapsedSinceLastSpeech = now - lastSpeech;
+    
+    // 最後に声（閾値以上の音量）を検知してから 2.5秒 未満の場合は、確定を保留して延期する
+    if (elapsedSinceLastSpeech < 2500) {
+      if (clientInfo.sendTimer) {
+        clearTimeout(clientInfo.sendTimer);
+      }
+      const remain = 2500 - elapsedSinceLastSpeech;
+      clientInfo.sendTimer = setTimeout(() => {
+        sendFinalTranscription(userId);
+      }, Math.max(remain, 500)); // 残り時間（最低500ms）待って再チェック
+      return;
+    }
+  }
 
   const finalInput = clientInfo.currentInputText.trim();
   const finalOutput = clientInfo.currentOutputText.trim();
@@ -970,6 +1266,13 @@ function sendFinalTranscription(userId) {
   // 原文と翻訳結果がともに無意味なフィラーのみの場合は、ダッシュボード送信を完全にスキップ
   if (isFillerOnly(finalInput) && isFillerOnly(finalOutput)) {
     console.log(`🔇 [Gemini Live API] フィラーのみ検出されたため送信をスキップしました: [原文] "${finalInput}" -> [翻訳] "${finalOutput}"`);
+    
+    // ダッシュボード側に残っているプレビュー表示をクリアするよう通知
+    broadcastToDashboards({
+      type: "clear_preview",
+      user_id: userId
+    });
+
     // バッファをクリアしてタイマーを解除
     clientInfo.currentInputText = "";
     clientInfo.currentOutputText = "";
@@ -978,15 +1281,80 @@ function sendFinalTranscription(userId) {
   }
 
   if (finalInput || finalOutput) {
-    console.log(`🤖 [Gemini Live API] 確定送信 (User: ${userId}): [原文] ${finalInput} -> [翻訳] ${finalOutput}`);
+    console.log(`🤖 [Gemini Live API] 確定 (User: ${userId}): [原文] ${finalInput} -> [デフォルト翻訳] ${finalOutput}`);
     
-    const userLang = userLanguages.get(userId) || dashboardTargetLang || targetLang || "JA";
     const username = knownUsers.get(userId)?.username || `User_${userId.slice(-4)}`;
     const avatarUrl = knownUsers.get(userId)?.avatarUrl || "";
     
-    // 各ダッシュボードに送信
+    // ダッシュボードごとの個別翻訳キャッシュ (キー: 言語_エンジン -> { translatedText, translationSkipped })
+    const translationCache = new Map();
+
+    // 各ダッシュボードに個別翻訳して送信
     for (const wsDash of connectedDashboards) {
       if (wsDash.readyState === 1) {
+        const currentTargetLang = wsDash.targetLang || targetLang || "JA";
+        
+        // 言語コードの比較用プレフィックス
+        const srcPrefix = (userLanguages.get(userId) || "auto").toLowerCase().substring(0, 2);
+        const tgtPrefix = currentTargetLang.toLowerCase().substring(0, 2);
+        const defaultTgtPrefix = (dashboardTargetLang || "JA").toLowerCase().substring(0, 2);
+
+        let translatedText = "";
+        let translationSkipped = true;
+
+        if (tgtPrefix === srcPrefix) {
+          // 原文の言語と希望言語が同じなら翻訳不要
+          translatedText = finalInput;
+          translationSkipped = true;
+        } else if (tgtPrefix === defaultTgtPrefix) {
+          // 希望言語がLive APIのデフォルト翻訳先と同じなら、高品質なLive API翻訳結果をそのまま使用
+          translatedText = finalOutput;
+          translationSkipped = false;
+        } else {
+          // 希望言語が異なる場合は個別テキスト翻訳を実行 (キャッシュとキューを考慮)
+          const activeTranslator = wsDash.deeplTranslator || customDeeplTranslator || deeplTranslator;
+          const engineType = activeTranslator ? "deepl" : "gemini";
+          const cacheKey = `${currentTargetLang.toUpperCase()}_${engineType}`;
+
+          if (translationCache.has(cacheKey)) {
+            const cached = translationCache.get(cacheKey);
+            translatedText = cached.translatedText;
+            translationSkipped = cached.translationSkipped;
+          } else {
+            if (activeTranslator) {
+              try {
+                let tl = currentTargetLang.toUpperCase();
+                if (tl === "EN") tl = "EN-US";
+                if (tl === "PT") tl = "PT-BR";
+
+                const result = await activeTranslator.translateText(finalInput, null, tl);
+                translatedText = result.text;
+                translationSkipped = false;
+
+                if (wsDash.deeplTranslator) {
+                  updateWsUsageCache(wsDash).catch(() => {});
+                } else {
+                  updateUsageCache(activeTranslator).catch(() => {});
+                }
+              } catch (err) {
+                console.error(`❌ [DeepL] 音声の個別翻訳エラー: ${err.message}`);
+                translatedText = `[翻訳エラー: ${err.message}]`;
+              }
+            } else if (GEMINI_API_KEY) {
+              try {
+                const result = await translateWithGemini(finalInput, currentTargetLang);
+                translatedText = result.translated_text;
+                translationSkipped = result.translation_skipped;
+              } catch (err) {
+                console.error(`❌ [Gemini Translate] 音声の個別翻訳エラー: ${err.message}`);
+                translatedText = `[翻訳エラー: ${err.message}]`;
+              }
+            }
+
+            translationCache.set(cacheKey, { translatedText, translationSkipped });
+          }
+        }
+
         wsDash.send(JSON.stringify({
           type: "transcription",
           user_id: userId,
@@ -994,9 +1362,9 @@ function sendFinalTranscription(userId) {
           avatar_url: avatarUrl,
           original_text: finalInput,
           detected_language: "auto",
-          translated_text: finalOutput,
-          target_lang: userLang,
-          translation_skipped: false,
+          translated_text: translatedText,
+          target_lang: currentTargetLang,
+          translation_skipped: translationSkipped,
           deepl_usage: wsDash.cachedUsage || cachedUsage,
           timestamp: new Date().toLocaleTimeString("ja-JP")
         }));
@@ -1027,8 +1395,9 @@ function getOrCreateGeminiClient(userId) {
 
   console.log(`🔌 [Gemini Live API] ユーザー ${userId} の専用セッションを開始中...`);
 
-  const userLang = userLanguages.get(userId) || dashboardTargetLang || targetLang || "JA";
-  const geminiLangCode = mapToBCP47(userLang);
+  const userLang = userLanguages.get(userId) || "auto";
+  const targetLangCode = dashboardTargetLang || targetLang || "JA";
+  const geminiTargetLangCode = mapToBCP47(targetLangCode);
 
   const url = `wss://generativelanguage.googleapis.com/ws/google.ai.generativelanguage.v1beta.GenerativeService.BidiGenerateContent?key=${GEMINI_API_KEY}`;
   const ws = new WebSocket(url);
@@ -1037,7 +1406,7 @@ function getOrCreateGeminiClient(userId) {
     ws,
     isReady: false,
     userId,
-    targetLang: geminiLangCode,
+    targetLang: geminiTargetLangCode,
     reconnectAttempts: reconnectAttempts,
     currentInputText: "",
     currentOutputText: "",
@@ -1047,15 +1416,37 @@ function getOrCreateGeminiClient(userId) {
 
   ws.on("open", () => {
     console.log(`✅ [Gemini Live API] ユーザー ${userId} とのWebSocket接続が確立しました。初期セットアップを送信します...`);
+
+    const cleanUserLang = userLang.toUpperCase();
+    let inputLangName = "their native language";
+    if (cleanUserLang !== "AUTO") {
+      inputLangName = langNamesEng[cleanUserLang] || langNamesEng[mapToBCP47(userLang).toUpperCase()] || "their native language";
+    }
+    const targetLangName = langNamesEng[targetLangCode.toUpperCase()] || langNamesEng[geminiTargetLangCode.toUpperCase()] || "Japanese";
+
+    let promptText = "";
+    if (cleanUserLang === "AUTO") {
+      promptText = `You are a professional real-time speech translator. Listen to the user's speech, automatically detect the language they are speaking, and translate it into ${targetLangName}. Only output the translation.`;
+    } else {
+      promptText = `You are a professional real-time speech translator. The user is speaking in ${inputLangName}. Please listen to their speech and translate it into ${targetLangName}. Only output the translation.`;
+    }
+
     ws.send(JSON.stringify({
       setup: {
         model: "models/gemini-3.5-live-translate-preview",
         generationConfig: {
           responseModalities: ["AUDIO"],
           translationConfig: {
-            targetLanguageCode: geminiLangCode,
+            targetLanguageCode: geminiTargetLangCode,
             echoTargetLanguage: false
           }
+        },
+        systemInstruction: {
+          parts: [
+            {
+              text: promptText
+            }
+          ]
         },
         inputAudioTranscription: {},
         outputAudioTranscription: {}
@@ -1079,6 +1470,13 @@ function getOrCreateGeminiClient(userId) {
         console.log(`✨ [Gemini Live API] ユーザー ${userId} のセットアップが完了し、通訳準備が整いました。`);
         clientInfo.isReady = true;
         clientInfo.reconnectAttempts = 0;
+        
+        // 接続待ちの間に溜まっていたバッファがあれば即座に送信
+        const stream = activeStreams.get(userId);
+        if (stream && stream.buffer.length > 0) {
+          console.log(`📤 [Gemini Live API] 接続待ちバッファの送信を開始します (${stream.buffer.length} bytes)`);
+          sendStreamChunk(userId);
+        }
         return;
       }
 
@@ -1098,13 +1496,15 @@ function getOrCreateGeminiClient(userId) {
 
         // ユーザーの発言（音声認識結果）を蓄積
         if (serverContent.inputTranscription && serverContent.inputTranscription.text) {
-          clientInfo.currentInputText = mergeText(clientInfo.currentInputText, serverContent.inputTranscription.text);
+          const cleanText = serverContent.inputTranscription.text.replace(/\{cont>/g, "");
+          clientInfo.currentInputText = mergeText(clientInfo.currentInputText, cleanText);
           hasNewText = true;
         }
         
         // 翻訳結果のテキストを蓄積
         if (serverContent.outputTranscription && serverContent.outputTranscription.text) {
-          clientInfo.currentOutputText = mergeText(clientInfo.currentOutputText, serverContent.outputTranscription.text);
+          const cleanText = serverContent.outputTranscription.text.replace(/\{cont>/g, "");
+          clientInfo.currentOutputText = mergeText(clientInfo.currentOutputText, cleanText);
           hasNewText = true;
         }
         
@@ -1112,28 +1512,27 @@ function getOrCreateGeminiClient(userId) {
         if (serverContent.modelTurn && serverContent.modelTurn.parts) {
           const textParts = serverContent.modelTurn.parts.filter(p => p.text).map(p => p.text).join("");
           if (textParts) {
-            clientInfo.currentOutputText = mergeText(clientInfo.currentOutputText, textParts);
+            const cleanText = textParts.replace(/\{cont>/g, "");
+            clientInfo.currentOutputText = mergeText(clientInfo.currentOutputText, cleanText);
             hasNewText = true;
           }
         }
         
         // 新しいテキストが届いた場合はタイマーを（再）起動
         if (hasNewText) {
+          // リアルタイム・プレビューを送信
+          sendTranscriptionPreview(userId);
+
           if (clientInfo.sendTimer) {
             clearTimeout(clientInfo.sendTimer);
           }
           clientInfo.sendTimer = setTimeout(() => {
             sendFinalTranscription(userId);
-          }, 1800); // 1.8秒に延長
+          }, 2500); // 2.5秒の沈黙で確定させる（細切れ防止）
         }
-        
-        // ターンが完了（話し終わった）したら即座に送信
-        if (serverContent.turnComplete) {
-          if (clientInfo.sendTimer) {
-            clearTimeout(clientInfo.sendTimer);
-          }
-          sendFinalTranscription(userId);
-        }
+
+        // 💡 リアルタイム送信時の細切れ化を防ぐため、turnCompleteによる即時確定は行いません。
+        // （Geminiは短い息継ぎで頻繁にturnCompleteを送るため、1.5秒の確定タイマーに処理を委ねることで一文を綺麗に繋げます）
       }
     } catch (err) {
       console.error(`❌ [Gemini Live API] メッセージパースエラー:`, err);
@@ -1144,6 +1543,13 @@ function getOrCreateGeminiClient(userId) {
     console.log(`🔌 [Gemini Live API] ユーザー ${userId} の接続が切断されました (Code: ${code}, Reason: ${reason})`);
     clientInfo.isReady = false;
     
+    // 現在登録されているクライアント情報がこのWebSocketインスタンスと異なる場合は、
+    // すでに意図的に削除または再作成されているため、再接続処理をスキップ
+    const current = geminiClients.get(userId);
+    if (!current || current.ws !== ws) {
+      return;
+    }
+    
     // ユーザーがまだVCにいる場合のみ自動再接続
     const isStillInVC = voiceChannelMembers.has(userId);
     if (isStillInVC && clientInfo.reconnectAttempts < 5) {
@@ -1151,7 +1557,11 @@ function getOrCreateGeminiClient(userId) {
       clientInfo.reconnectAttempts++;
       console.log(`⏳ [Gemini Live API] ${delay}ms 後に ユーザー ${userId} のセッションを自動再接続します... (試行 ${clientInfo.reconnectAttempts})`);
       setTimeout(() => {
-        getOrCreateGeminiClient(userId);
+        // 再接続時にまだMapに自分が登録されている場合のみ実行
+        const check = geminiClients.get(userId);
+        if (check && check.ws === ws) {
+          getOrCreateGeminiClient(userId);
+        }
       }, delay);
     } else {
       geminiClients.delete(userId);
@@ -1166,17 +1576,133 @@ function getOrCreateGeminiClient(userId) {
 }
 
 /**
+ * Gemini Live API 専用: 蓄積された音声チャンクをリアルタイムで送信
+ */
+function sendStreamChunk(userId) {
+  const stream = activeStreams.get(userId);
+  if (!stream || stream.buffer.length === 0) return;
+
+  const audioBuffer = Buffer.from(stream.buffer);
+  stream.buffer = Buffer.alloc(0);
+
+  const strUserId = String(userId);
+  const clientInfo = getOrCreateGeminiClient(strUserId);
+
+  if (clientInfo && clientInfo.isReady) {
+    const rms = calculateRMS(audioBuffer);
+    
+    // ダッシュボードに音量(RMS)を送信
+    broadcastToDashboards({
+      type: "user_volume",
+      user_id: strUserId,
+      rms: Math.round(rms)
+    });
+
+    const userThreshold = userNoiseThresholds.get(strUserId) ?? NOISE_THRESHOLD_RMS;
+
+    if (rms >= userThreshold) {
+      // 閾値を超えた場合: 音声アクティブ状態にする (既存の無音猶予タイマーはクリア)
+      stream.isVolumeActive = true;
+      stream.lastSpeechTime = Date.now(); // 発話検知時刻を更新
+      if (stream.volumeActiveTimer) {
+        clearTimeout(stream.volumeActiveTimer);
+        stream.volumeActiveTimer = null;
+      }
+    } else {
+      // 閾値を下回った場合: すでにアクティブなら 1.5秒のハングオーバー(猶予)タイマーを起動
+      if (stream.isVolumeActive && !stream.volumeActiveTimer) {
+        stream.volumeActiveTimer = setTimeout(() => {
+          stream.isVolumeActive = false;
+          stream.volumeActiveTimer = null;
+          console.log(`🔇 [Gemini Noise Gate] ゲートが閉じました (User: ${userId}, RMS: ${rms.toFixed(1)} < ${userThreshold})`);
+        }, 1500); // 1.5秒の無音継続でゲートクローズ (レスポンス高速化のため短縮)
+      }
+    }
+
+    // ゲートが開いている（アクティブ）場合のみ音声を Gemini に流す
+    if (stream.isVolumeActive) {
+      const base64Audio = audioBuffer.toString("base64");
+      try {
+        clientInfo.ws.send(JSON.stringify({
+          realtimeInput: {
+            mediaChunks: [
+              {
+                mimeType: "audio/pcm",
+                data: base64Audio
+              }
+            ]
+          }
+        }));
+      } catch (err) {
+        console.error(`❌ [Gemini Live API] ストリーム送信失敗 (User: ${userId}):`, err.message);
+      }
+    }
+  } else {
+    // Geminiクライアントが接続中または未準備の場合、音声の頭切れを防ぐためバッファに保留する
+    // メモリリーク防止のため最大5秒分（16000Hz * 2bytes * 5s = 160000 bytes）までに制限
+    if (stream.buffer.length < 160000) {
+      stream.buffer = Buffer.concat([audioBuffer, stream.buffer]);
+    }
+  }
+}
+
+/**
+ * ユーザーの音声ストリームとデコーダーを破棄し、isListening状態をリセットする
+ */
+function cleanupUserStream(userId) {
+  const state = activeStreams.get(userId);
+  if (state) {
+    if (state.silenceTimer) {
+      clearTimeout(state.silenceTimer);
+      state.silenceTimer = null;
+    }
+    // volumeActiveTimer もクリアする
+    if (state.volumeActiveTimer) {
+      clearTimeout(state.volumeActiveTimer);
+      state.volumeActiveTimer = null;
+    }
+    state.isVolumeActive = false;
+    try {
+      if (state.opusStream) state.opusStream.destroy();
+      if (state.decoder) state.decoder.destroy();
+    } catch (e) {
+      console.warn(`⚠️ [Discord Stream Cleanup] ストリームの破棄中に軽微な警告:`, e.message);
+    }
+    state.isListening = false;
+  }
+
+  // 5秒の沈黙でストリームが解放されたら、Gemini WebSocket セッションもクローズして接続枠を解放する
+  const clientInfo = geminiClients.get(userId);
+  if (clientInfo) {
+    console.log(`🔌 [Gemini Live API] ユーザー ${userId} が無音のため、WebSocket 接続をクローズして接続枠を解放します。`);
+    // closeする前に Map から消去することで、close イベント内での自動再接続を防ぐ
+    geminiClients.delete(userId);
+    try {
+      if (clientInfo.sendTimer) {
+        clearTimeout(clientInfo.sendTimer);
+      }
+      clientInfo.ws.close();
+    } catch (e) {
+      console.error(`❌ [Gemini Live API] クローズエラー:`, e.message);
+    }
+  }
+}
+
+/**
  * 特定ユーザーの音声リスニングを開始
  */
 function startListening(connection, userId) {
+  const isGemini = isGeminiMode;
+  
+  const endBehavior = isGemini
+    ? { behavior: EndBehaviorType.Manual }
+    : { behavior: EndBehaviorType.AfterSilence, duration: 500 };
+
   const opusStream = connection.receiver.subscribe(userId, {
-    end: {
-      behavior: EndBehaviorType.AfterSilence,
-      duration: 500,
-    },
+    end: endBehavior,
   });
 
-  const sampleRate = isGeminiMode ? 16000 : SAMPLE_RATE;
+  const sampleRate = isGemini ? 16000 : SAMPLE_RATE;
   const decoder = new prism.opus.Decoder({
     rate: sampleRate,
     channels: CHANNELS,
@@ -1189,34 +1715,78 @@ function startListening(connection, userId) {
       lastSendTime: 0,
       flushTimer: null,
       isListening: false,
+      isVolumeActive: false,
+      volumeActiveTimer: null,
+      lastSpeechTime: 0, // 最後の発話（声）検知時刻
       username: knownUsers.get(userId)?.username || `User_${userId.slice(-4)}`,
       avatarUrl: knownUsers.get(userId)?.avatarUrl || "",
     });
+  } else {
+    // 既存の状態がある場合、ストリーム再作成に伴いタイマー類を確実にクリーンアップ
+    const existingState = activeStreams.get(userId);
+    if (existingState.volumeActiveTimer) {
+      clearTimeout(existingState.volumeActiveTimer);
+      existingState.volumeActiveTimer = null;
+    }
+    existingState.isVolumeActive = false;
   }
 
   const state = activeStreams.get(userId);
   state.isListening = true;
+  state.opusStream = opusStream;
+  state.decoder = decoder;
 
   if (state.flushTimer) {
     clearTimeout(state.flushTimer);
     state.flushTimer = null;
   }
 
+  // 無音監視用の既存タイマーがあればクリア
+  if (state.silenceTimer) {
+    clearTimeout(state.silenceTimer);
+    state.silenceTimer = null;
+  }
+
   const pcmStream = opusStream.pipe(decoder);
 
   pcmStream.on("data", (chunk) => {
     state.buffer = Buffer.concat([state.buffer, chunk]);
+    
+    // Geminiモードで常時購読している場合のみ、5秒の無音監視タイマーを起動・更新
+    if (isGemini) {
+      if (state.silenceTimer) {
+        clearTimeout(state.silenceTimer);
+      }
+      state.silenceTimer = setTimeout(() => {
+        console.log(`🔌 [Discord Stream] 5秒間の沈黙を検知したため、ユーザー ${userId} の音声ストリームを解放します。`);
+        cleanupUserStream(userId);
+      }, 5000); // 5秒の沈黙でストリーム解放
+      
+      // 100msごとに送信 (16000 * 2 * 0.1 = 3200 bytes)
+      const triggerSize = 3200;
+      if (state.buffer.length >= triggerSize) {
+        sendStreamChunk(userId);
+      }
+    }
   });
 
   pcmStream.on("end", () => {
     state.isListening = false;
-    if (state.buffer.length > 0) {
+    if (state.silenceTimer) {
+      clearTimeout(state.silenceTimer);
+      state.silenceTimer = null;
+    }
+    if (!isGemini && state.buffer.length > 0) {
       flushBuffer(userId);
     }
   });
 
   pcmStream.on("error", (error) => {
     state.isListening = false;
+    if (state.silenceTimer) {
+      clearTimeout(state.silenceTimer);
+      state.silenceTimer = null;
+    }
     console.error(`❌ 音声デコードエラー (${userId}):`, error.message);
   });
 }
@@ -1403,57 +1973,98 @@ function getStatus() {
 async function handleDiscordChatMessage(username, avatarUrl, text) {
   if (!text || !text.trim()) return;
 
-  for (const wsDash of connectedDashboards) {
-    if (wsDash.readyState === 1) {
-      // そのダッシュボード固有の希望翻訳言語
-      const currentTargetLang = wsDash.targetLang || targetLang || "JA";
-      
-      let translatedText = "";
-      let translationSkipped = true;
-      
-      // 優先順位：個別キー -> グローバルカスタムキー -> デフォルトキー
-      const activeTranslator = wsDash.deeplTranslator || customDeeplTranslator || deeplTranslator;
-      
-      if (activeTranslator) {
-        try {
-          let tl = currentTargetLang.toUpperCase();
-          if (tl === "EN") tl = "EN-US";
-          if (tl === "PT") tl = "PT-BR";
+  // すべてのチャット翻訳タスクを単一の実行キューで直列処理し、APIバーストを防ぐ
+  chatTranslationQueue = chatTranslationQueue.then(async () => {
+    try {
+      // 翻訳結果の一時的なキャッシュ (キー: 言語_エンジン -> { translatedText, translationSkipped })
+      const translationCache = new Map();
 
-          const result = await activeTranslator.translateText(
-            text,
-            null,
-            tl
-          );
+      for (const wsDash of connectedDashboards) {
+        if (wsDash.readyState === 1) {
+          // そのダッシュボード固有の希望翻訳言語
+          const currentTargetLang = wsDash.targetLang || targetLang || "JA";
           
-          translatedText = result.text;
-          translationSkipped = false;
+          let translatedText = "";
+          let translationSkipped = true;
           
-          // 使用量キャッシュをバックグラウンドで更新
-          if (wsDash.deeplTranslator) {
-            updateWsUsageCache(wsDash).catch(() => {});
+          // 優先順位：個別キー -> グローバルカスタムキー -> デフォルトキー
+          const activeTranslator = wsDash.deeplTranslator || customDeeplTranslator || deeplTranslator;
+          
+          // キャッシュキーの定義 (言語 + 翻訳エンジンの種類)
+          const engineType = activeTranslator ? "deepl" : "gemini";
+          const cacheKey = `${currentTargetLang.toUpperCase()}_${engineType}`;
+
+          if (translationCache.has(cacheKey)) {
+            // すでに同一言語＆同一エンジンで翻訳済みの場合はキャッシュを利用
+            const cached = translationCache.get(cacheKey);
+            translatedText = cached.translatedText;
+            translationSkipped = cached.translationSkipped;
           } else {
-            updateUsageCache(activeTranslator).catch(() => {});
+            if (activeTranslator) {
+              try {
+                let tl = currentTargetLang.toUpperCase();
+                if (tl === "EN") tl = "EN-US";
+                if (tl === "PT") tl = "PT-BR";
+
+                const result = await activeTranslator.translateText(
+                  text,
+                  null,
+                  tl
+                );
+                
+                translatedText = result.text;
+                translationSkipped = false;
+                
+                // 使用量キャッシュをバックグラウンドで更新
+                if (wsDash.deeplTranslator) {
+                  updateWsUsageCache(wsDash).catch(() => {});
+                } else {
+                  updateUsageCache(activeTranslator).catch(() => {});
+                }
+              } catch (err) {
+                console.error(`❌ [DeepL] Discordチャットの個別翻訳エラー: ${err.message}`);
+                translatedText = `[翻訳エラー: ${err.message}]`;
+              }
+            } else if (GEMINI_API_KEY) {
+              // DeepLが未設定で、かつGeminiクラウド翻訳モードが有効ならGeminiでフォールバック！
+              try {
+                const result = await translateWithGemini(text, currentTargetLang);
+                translatedText = result.translated_text;
+                translationSkipped = result.translation_skipped;
+              } catch (err) {
+                console.error(`❌ [Gemini Translate] フォールバック翻訳エラー: ${err.message}`);
+                translatedText = `[翻訳エラー: ${err.message}]`;
+              }
+            }
+            
+            // 結果をキャッシュに格納
+            translationCache.set(cacheKey, {
+              translatedText,
+              translationSkipped
+            });
           }
-        } catch (err) {
-          console.error(`❌ [DeepL] Discordチャットの個別翻訳エラー: ${err.message}`);
-          translatedText = `[翻訳エラー: ${err.message}]`;
+
+          // ダッシュボード固有に翻訳された結果を送信！
+          wsDash.send(JSON.stringify({
+            type: "discord_chat_message",
+            username: username,
+            avatar_url: avatarUrl,
+            original_text: text,
+            translated_text: translatedText,
+            target_lang: currentTargetLang,
+            translation_skipped: translationSkipped,
+            timestamp: new Date().toLocaleTimeString("ja-JP")
+          }));
         }
       }
-
-      // ダッシュボード固有に翻訳された結果を送信！
-      wsDash.send(JSON.stringify({
-        type: "discord_chat_message",
-        username: username,
-        avatar_url: avatarUrl,
-        original_text: text,
-        translated_text: translatedText,
-        target_lang: currentTargetLang,
-        translation_skipped: translationSkipped,
-        timestamp: new Date().toLocaleTimeString("ja-JP")
-      }));
+      // リクエスト間のバーストを防ぐため、次の直列タスクまでに 500ms のクールダウンを入れる
+      await new Promise(resolve => setTimeout(resolve, 500));
+    } catch (err) {
+      console.error("❌ [Chat Translation Queue] エラー:", err.message);
     }
-  }
+  }).catch(err => {
+    console.error("❌ [Chat Translation Queue Critical] エラー:", err.message);
+  });
 }
 
 module.exports = {

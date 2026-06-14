@@ -36,6 +36,7 @@
             </div>
             <div class="voice-controls">
                 <button id="leave-btn" class="btn-leave" title="Botをボイスチャンネルから退出させる" style="display:none">👋 退出</button>
+                <button id="toggle-compact-btn" class="btn-clear" style="margin-left: 10px; font-size: 0.75rem; padding: 4px 8px; height: 26px;" title="ヘッダーとメンバーパネルを非表示にして表示領域を広げます">↕️ 上部を縮める</button>
             </div>
         </div>
         <div class="header-right">
@@ -76,10 +77,10 @@
                 </div>
             </div>
 
-            <!-- DeepLキー設定 -->
-            <div class="lang-selector">
-                <input type="password" id="deepl-key-input" placeholder="DeepL APIキーを入力" title="あなたのDeepL APIキー。ブラウザに保存され、サーバーへ安全に送信されます。" style="width: 140px; background: var(--bg-card); color: var(--text-primary); border: 1px solid var(--border-subtle); border-radius: var(--radius-sm); padding: 6px 10px; font-size: 0.8rem;">
-                <button id="apply-key-btn" class="btn-join" style="padding: 6px 10px; font-size: 0.8rem; height: 30px; line-height: 1;">適用</button>
+            <!-- API Key configurations (Simplifed, DeepL no longer required) -->
+            <div class="lang-selector" style="display: none;">
+                <input type="password" id="deepl-key-input" style="display: none;">
+                <button id="apply-key-btn" style="display: none;">適用</button>
             </div>
         </div>
     </header>
@@ -132,7 +133,7 @@
         <!-- Discordチャット翻訳パネル (右側) -->
         <aside id="discord-chat-panel" class="discord-chat-panel">
             <div class="chat-panel-header">
-                <span class="chat-panel-title">💬 Discord Live Chat (DeepL)</span>
+                <span class="chat-panel-title">💬 Discord Live Chat</span>
                 <span class="chat-panel-subtitle">テキストチャットの翻訳を表示 (新着順)</span>
             </div>
             <div id="discord-chat-list" class="discord-chat-list">
@@ -147,8 +148,6 @@
             <span id="message-count">0 件の発言</span>
             <span class="separator">|</span>
             <span id="last-update">最終更新: --:--:--</span>
-            <span class="separator">|</span>
-            <span id="deepl-usage">DeepL使用量: 0 / 1000000 (0.0%)</span>
         </div>
         <div class="footer-right">
             <button id="auto-scroll-btn" class="btn-auto-scroll active" title="最新の発言への自動追従">
