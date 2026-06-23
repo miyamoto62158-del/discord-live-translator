@@ -18,7 +18,6 @@ const voiceHandler = require("./voiceHandler");
 
 // ── 設定 ──
 const DISCORD_TOKEN = process.env.DISCORD_TOKEN;
-const HYBRID_WS_PORT = parseInt(process.env.HYBRID_WS_PORT || "8765", 10);
 const DASHBOARD_PORT = parseInt(process.env.DASHBOARD_PORT || "3000", 10);
 const DASHBOARD_URL = process.env.DASHBOARD_URL || `http://localhost:${DASHBOARD_PORT}`;
 const DEFAULT_TARGET_LANG = process.env.DEFAULT_TARGET_LANG || "JA";
@@ -166,26 +165,7 @@ client.on("interactionCreate", async (interaction) => {
       });
     }
 
-    // ★重要: ローカルPCクライアント（GPU側）が接続されているかチェック
-    // ただし、Geminiクラウド翻訳モードが有効な場合はこのチェックをスキップします
-    const status = voiceHandler.getStatus();
-    if (!status.isGeminiMode && !voiceHandler.hasActiveClient()) {
-      const vramErr = voiceHandler.getLastVramError();
-      let errorMsg = "⚠️ **GPUクライアントが未接続です。**\n\n";
-      if (vramErr) {
-        errorMsg += `🚨 **前回のエラー**: \`${vramErr}\`\n\n`;
-      }
-      errorMsg += "📥 **手順（初回のみ）**\n";
-      errorMsg += "1. GitHubリポジトリからコードをダウンロード\n";
-      errorMsg += "2. `start-client.bat` をダブルクリックして起動\n";
-      errorMsg += "3. 「スタンバイOK」と表示されたら、もう一度 `/join` を実行\n\n";
-      errorMsg += `📊 ダッシュボード: ${DASHBOARD_URL}`;
 
-      return interaction.reply({
-        content: errorMsg,
-        ephemeral: false
-      });
-    }
 
     await interaction.deferReply();
 
@@ -245,12 +225,7 @@ client.on("interactionCreate", async (interaction) => {
     const status = voiceHandler.getStatus();
     let statusText = "📊 **Bot ステータス**\n";
     statusText += `接続状態: ${status.connected ? "✅ 接続中" : "❌ 未接続"}\n`;
-    if (status.isGeminiMode) {
-      statusText += `翻訳モード: ☁️ Gemini 3.5 クラウド翻訳 (ローカルPC起動不要)\n`;
-    } else {
-      statusText += `翻訳モード: 💻 ハイブリッド (ローカルGPUクライアント)\n`;
-      statusText += `ローカルGPUクライアント: ${status.hasClient ? "✅ 接続完了 (準備OK)" : "❌ 未接続 (起動してください)"}\n`;
-    }
+    statusText += `翻訳モード: ☁️ Gemini 3.5 クラウド翻訳\n`;
     statusText += `アクティブストリーム: ${status.activeStreams}\n`;
     statusText += `翻訳先言語: ${status.targetLang}\n`;
     statusText += `ダッシュボード: ${DASHBOARD_URL}`;
@@ -305,10 +280,6 @@ app.use(express.json());
 
 app.post("/api/join", async (req, res) => {
   try {
-    const status = voiceHandler.getStatus();
-    if (!status.isGeminiMode && !voiceHandler.hasActiveClient()) {
-      return res.json({ ok: false, error: "文字起こしクライアントが接続されていません。ローカルクライアントを起動してください。" });
-    }
 
     let targetChannel = null;
     for (const [, guild] of client.guilds.cache) {
@@ -379,12 +350,6 @@ wssDashboard.on("connection", (ws) => {
   voiceHandler.handleDashboardConnection(ws);
 });
 
-// 2. ハイブリッドPCクライアント用WebSocketサーバー (/hybrid)
-const wssHybrid = new WebSocketServer({ noServer: true });
-wssHybrid.on("connection", (ws) => {
-  voiceHandler.handleHybridConnection(ws);
-});
-
 // HTTPアップグレードリクエストを振り分ける
 server.on("upgrade", (request, socket, head) => {
   // パス名を取得
@@ -395,10 +360,6 @@ server.on("upgrade", (request, socket, head) => {
     wssDashboard.handleUpgrade(request, socket, head, (ws) => {
       wssDashboard.emit("connection", ws, request);
     });
-  } else if (pathname === "/hybrid") {
-    wssHybrid.handleUpgrade(request, socket, head, (ws) => {
-      wssHybrid.emit("connection", ws, request);
-    });
   } else {
     socket.destroy();
   }
@@ -408,7 +369,6 @@ server.on("upgrade", (request, socket, head) => {
 server.listen(DASHBOARD_PORT, () => {
   console.log(`📊 ダッシュボード ＆ WebSocket サーバー起動完了！`);
   console.log(`🔗 Webダッシュボード: http://localhost:${DASHBOARD_PORT}`);
-  console.log(`🔌 ローカルPC接続用WebSocket: ws://localhost:${DASHBOARD_PORT}/hybrid`);
   
   // localtunnel をバックグラウンドで自動起動
   voiceHandler.startTunnel();

@@ -16,10 +16,7 @@ let ws = null;
 let messageCount = 0;
 let isConnected = false;
 let autoScroll = true;  // 自動追従フラグ
-let cachedClientStatus = null; // キャッシュされたクライアント情報
 let voiceMembers = []; // 現在VCにいるメンバーの配列
-let isModelLoading = false;    // ASRモデルロード中フラグ
-let isGeminiMode = false;      // Geminiクラウド翻訳モード有効フラグ
 const activePreviews = {};
 
 const userColors = {};
@@ -66,15 +63,8 @@ const elements = {
     statusText: document.querySelector('.status-text'),
     messageCount: document.getElementById('message-count'),
     lastUpdate: document.getElementById('last-update'),
-    deeplUsage: document.getElementById('deepl-usage'),
     clearBtn: document.getElementById('clear-btn'),
     autoScrollBtn: document.getElementById('auto-scroll-btn'),
-    
-    // カスタムセレクトボックス要素 (ブラウザ自動翻訳対応)
-    modelSelectWrapper: document.getElementById('model-select-wrapper'),
-    modelSelectText: document.getElementById('model-select-text'),
-    modelOptions: document.getElementById('model-options'),
-    vramInfo: document.getElementById('vram-info'),
     
     voiceMembersPanel: document.getElementById('voice-members-panel'),
     voiceMembersList: document.getElementById('voice-members-list'),
@@ -83,9 +73,6 @@ const elements = {
     targetLangText: document.getElementById('target-lang-text'),
     targetLangOptions: document.getElementById('target-lang-options'),
     
-    // DeepL設定
-    deeplKeyInput: document.getElementById('deepl-key-input'),
-    applyKeyBtn: document.getElementById('apply-key-btn'),
     connectionWarning: document.getElementById('connection-warning'),
     discordChatList: document.getElementById('discord-chat-list')
 };
@@ -114,9 +101,7 @@ function connect() {
 
     ws.onclose = () => {
         isConnected = false;
-        isModelLoading = false;
         updateConnectionStatus(false);
-        updateClientStatus(null); // クライアント状態を未接続にする
         updateVoiceStatus(false); // 音声接続状態も解除
         setTimeout(connect, RECONNECT_INTERVAL);
     };
@@ -128,38 +113,6 @@ function connect() {
 function handleMessage(data) {
     switch (data.type) {
         case 'init':
-            toggleGeminiMode(data.isGeminiMode);
-            if (data.deeplUsage) {
-                updateDeepLUsage(data.deeplUsage);
-            }
-            if (isGeminiMode) {
-                if (data.voiceMembers && data.voiceMembers.length > 0) {
-                    voiceMembers = data.voiceMembers;
-                    renderVoiceMembers();
-                }
-                updateVoiceStatus(data.connected);
-                break;
-            }
-            if (data.isModelLoading) {
-                isModelLoading = true;
-                if (elements.modelSelectWrapper) {
-                    elements.modelSelectWrapper.classList.add('disabled');
-                }
-                const modelNames = {
-                    "qwen3": "Qwen3-ASR-1.7B",
-                    "whisper_large": "Whisper Large-v3",
-                    "whisper_medium": "Whisper Medium",
-                    "whisper_small": "Whisper Small"
-                };
-                const currentModelId = data.clientStatus ? data.clientStatus.current_model : '';
-                const mName = modelNames[currentModelId] || currentModelId || "モデル";
-                if (elements.modelSelectText) {
-                    elements.modelSelectText.textContent = `⏳ ${mName} をロード中...`;
-                }
-            }
-            if (data.clientStatus) {
-                updateClientStatus(data.clientStatus);
-            }
             if (data.voiceMembers && data.voiceMembers.length > 0) {
                 voiceMembers = data.voiceMembers;
                 renderVoiceMembers();
@@ -167,61 +120,8 @@ function handleMessage(data) {
             updateVoiceStatus(data.connected);
             break;
             
-        case 'client_status_update':
-            if (isGeminiMode) break;
-            updateClientStatus(data.clientStatus);
-            break;
-            
-        case 'model_loading':
-            if (isGeminiMode) break;
-            // 1. モデルロード中のフラグをセット
-            isModelLoading = true;
-            if (elements.modelSelectWrapper) {
-                elements.modelSelectWrapper.classList.add('disabled');
-            }
-            
-            // 2. 表示を「⏳ ロード中」に変更してフリーズ
-            const modelNames = {
-                "qwen3": "Qwen3-ASR-1.7B",
-                "whisper_large": "Whisper Large-v3",
-                "whisper_medium": "Whisper Medium",
-                "whisper_small": "Whisper Small"
-            };
-            const mName = modelNames[data.model_id] || data.model_id;
-            if (elements.modelSelectText) {
-                elements.modelSelectText.textContent = `⏳ ${mName} をロード中...`;
-            }
-            console.log(`⏳ ASRモデルロード中表示に切り替えました: [${mName}]`);
-            break;
-            
-        case 'model_changed':
-            if (isGeminiMode) break;
-            // 1. ロードが完了したため、ガードを解除
-            isModelLoading = false;
-            if (elements.modelSelectWrapper) {
-                elements.modelSelectWrapper.classList.remove('disabled');
-            }
-            
-            // 2. クライアントキャッシュの現在のアクティブモデルIDを更新して画面再構築
-            if (cachedClientStatus) {
-                cachedClientStatus.current_model = data.current_model;
-                updateClientStatus(cachedClientStatus);
-            }
-            console.log(`✨ ASRモデルロード完了表示に切り替えました: [${data.current_model}]`);
-            break;
-            
         case 'voice_status':
             updateVoiceStatus(data.connected, data.channelName);
-            break;
-            
-        case 'deepl_usage_update':
-            if (data.deeplUsage) {
-                updateDeepLUsage(data.deeplUsage);
-            }
-            break;
-            
-        case 'client_error':
-            alert(`⚠️ 音声認識クライアントエラー:\n${data.error_message}`);
             break;
             
         case 'transcription':
@@ -231,9 +131,6 @@ function handleMessage(data) {
                 if (preview.timeoutId) clearTimeout(preview.timeoutId);
                 if (preview.element) preview.element.remove();
                 delete activePreviews[data.user_id];
-            }
-            if (data.deepl_usage) {
-                updateDeepLUsage(data.deepl_usage);
             }
             break;
             
@@ -301,43 +198,7 @@ function handleMessage(data) {
     }
 }
 
-// ── Geminiクラウドモードのトグル ──
-function toggleGeminiMode(isGemini) {
-    isGeminiMode = !!isGemini;
-    const geminiWarning = document.getElementById('gemini-warning');
-    if (isGeminiMode) {
-        if (geminiWarning) {
-            geminiWarning.classList.add('show');
-        }
-        if (elements.modelSelectWrapper) {
-            elements.modelSelectWrapper.classList.add('disabled');
-        }
-        if (elements.modelSelectText) {
-            elements.modelSelectText.textContent = '☁️ Gemini 3.5 Live';
-        }
-        if (elements.vramInfo) {
-            elements.vramInfo.style.display = 'none';
-        }
-        const welcome = elements.welcome;
-        if (welcome) {
-            const welcomeNote = welcome.querySelector('.welcome-note');
-            if (welcomeNote && !welcomeNote.dataset.geminiModified) {
-                welcomeNote.innerHTML += `<br><span style="color: var(--accent-green); font-weight: bold;">⚡ 現在クラウド翻訳(Gemini)が有効なため、GPUクライアントの起動は不要です！</span>`;
-                welcomeNote.dataset.geminiModified = "true";
-            }
-        }
-    } else {
-        if (geminiWarning) {
-            geminiWarning.classList.remove('show');
-        }
-        if (elements.vramInfo) {
-            elements.vramInfo.style.display = 'inline';
-        }
-        if (elements.modelSelectWrapper) {
-            elements.modelSelectWrapper.classList.remove('disabled');
-        }
-    }
-}
+
 
 // ── 直近のユーザー発言音量(RMS)表示を更新 ──
 function updateUserVolumeDisplay(userId, rms) {
@@ -370,85 +231,7 @@ function updateUserVolumeDisplay(userId, rms) {
     }
 }
 
-// ── 音声認識クライアント（GPU/モデル）状態の表示更新 ──
-function updateClientStatus(status) {
-    if (isGeminiMode) {
-        return;
-    }
-    // モデルロード中の場合は、他のステータスパケットによる画面書き換え（上書き）を完全にシャットアウト
-    if (isModelLoading) {
-        console.log("⏳ ロード中ロック中のため、ステータス自動更新をスキップします");
-        return;
-    }
 
-    cachedClientStatus = status;
-    if (!elements.modelSelectWrapper || !elements.vramInfo || !elements.modelOptions) return;
-    
-    if (!status || !status.hasClient) {
-        // 文字起こしクライアントが接続されていない場合
-        elements.modelSelectText.textContent = '⚠️ GPUクライアント起動待ち...';
-        elements.modelSelectWrapper.classList.add('disabled');
-        elements.vramInfo.textContent = '(--GB)';
-        elements.modelOptions.innerHTML = '';
-        return;
-    }
-    
-    // VRAM空き容量の表示更新
-    elements.vramInfo.textContent = `(${status.free_vram_gb.toFixed(1)}GB)`;
-    elements.modelSelectWrapper.classList.remove('disabled');
-    
-    // 利用可能なモデルドロップダウンの動的再構築
-    elements.modelOptions.innerHTML = '';
-    let activeModelName = '接続待ち...';
-    
-    status.available_models.forEach(model => {
-        const isCurrent = model.id === status.current_model;
-        const opt = document.createElement('div');
-        opt.className = `custom-option${isCurrent ? ' selected' : ''}`;
-        opt.setAttribute('data-value', model.id);
-        opt.textContent = model.name;
-        
-        if (isCurrent) {
-            activeModelName = model.name;
-        }
-        
-        // クリックイベントの登録
-        opt.addEventListener('click', () => {
-            onModelChange(model.id);
-        });
-        
-        elements.modelOptions.appendChild(opt);
-    });
-    
-    elements.modelSelectText.textContent = activeModelName;
-}
-
-// ── ASRモデル変更 ──
-function onModelChange(modelId) {
-    if (!modelId) return;
-    
-    // モデル切り替え処理が走るため、ロード中状態を先行適用
-    isModelLoading = true;
-    if (elements.modelSelectWrapper) {
-        elements.modelSelectWrapper.classList.add('disabled');
-    }
-    
-    const modelNames = {
-        "qwen3": "Qwen3-ASR-1.7B",
-        "whisper_large": "Whisper Large-v3",
-        "whisper_medium": "Whisper Medium",
-        "whisper_small": "Whisper Small"
-    };
-    const mName = modelNames[modelId] || modelId;
-    if (elements.modelSelectText) {
-        elements.modelSelectText.textContent = `⏳ ${mName} をロード中...`;
-    }
-    
-    if (ws && ws.readyState === WebSocket.OPEN) {
-        ws.send(JSON.stringify({ type: 'change_model', model_id: modelId }));
-        console.log(`🔄 モデル切り替えを要求: ${modelId}`);
-    }
-}
 
 // ── BotのVoice接続状態の表示更新 ──
 function updateVoiceStatus(connected, channelName) {
@@ -472,21 +255,7 @@ function updateVoiceStatus(connected, channelName) {
     }
 }
 
-// ── DeepL APIキー適用 ──
-function applyDeepLKey() {
-    if (!elements.deeplKeyInput) return;
-    const key = elements.deeplKeyInput.value.trim();
-    
-    // ローカルブラウザに保存
-    localStorage.setItem('deepl_api_key', key);
-    
-    if (ws && ws.readyState === WebSocket.OPEN) {
-        ws.send(JSON.stringify({ type: 'set_deepl_key', key: key }));
-        console.log("🔑 カスタムDeepL APIキーを適用しました");
-    }
-    
-    alert('DeepL APIキーを保存し、適用しました！');
-}
+
 
 // ── リアルタイム・プレビューカードの更新・追加 ──
 function updateTranscriptionPreview(data) {
@@ -654,12 +423,7 @@ function getTranslationHtml(data) {
     return '';
 }
 
-// ── DeepL使用状況の表示更新 ──
-function updateDeepLUsage(usage) {
-    if (elements.deeplUsage && usage && usage.limit > 0) {
-        elements.deeplUsage.textContent = `DeepL使用量: ${usage.count.toLocaleString()} / ${usage.limit.toLocaleString()} (${usage.percent}%)`;
-    }
-}
+
 
 // ── ユーティリティ ──
 function updateConnectionStatus(connected) {
@@ -766,10 +530,7 @@ function setupCustomSelects() {
     });
 }
 
-// 音声言語カスタムセレクトボックスのセットアップ（個別設定に移行したため空）
-function setupDetectLangSelect() {
-    // グローバル検出言語セレクトは廃止。発言者ごとの設定パネルに移行済み。
-}
+
 
 // ── ボイスメンバーパネルの描画 ──
 function renderVoiceMembers() {
@@ -1081,7 +842,6 @@ toggleCompactBtn?.addEventListener('click', toggleCompactMode);
 
 // カスタムセレクトコントロールの初期化
 setupCustomSelects();
-setupDetectLangSelect();
 setupTargetLangSelect();
 
 // コンパクトモード関連ヘルパー

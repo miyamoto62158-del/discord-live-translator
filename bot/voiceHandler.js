@@ -1,13 +1,12 @@
 /**
- * voiceHandler.js - Discord ボイスチャンネルの音声受信・処理 (マルチモデル・各自DeepL対応・完全安定版)
+ * voiceHandler.js - Discord ボイスチャンネルの音声受信・処理 (Gemini API 専用・完全安定版)
  *
  * ユーザー別の音声ストリームを受信し、PCMに変換してバッファリング後、
- * WebSocketを通じて接続されているローカルPCクライアントへ転送する。
- * 翻訳は完全ローカルWebSocketでダッシュボード（ブラウザ）へ超高速配信されます。
+ * Gemini Live API を用いてリアルタイムに文字起こし＆翻訳を行います。
+ * 翻訳結果はダッシュボード（ブラウザ）へ超高速配信されます。
  * Discordチャットへの書き込みを行わないため、APIタイムアウトによるログ停止が100%発生しません。
  */
 
-const deepl = require("deepl-node");
 const { spawn } = require("child_process");
 const https = require("https");
 const os = require("os");
@@ -148,35 +147,7 @@ const langNamesEng = {
   "VI": "Vietnamese"
 };
 
-// ハイブリッド（ローカルクライアント）接続用の状態変数
-let activeWsClient = null; // ローカルPC(Transcriberクライアント)のWebSocket
-let lastVramError = "";    // 直近のVRAMエラーメッセージ
 const connectedDashboards = new Set(); // 接続されているブラウザダッシュボード
-
-// クライアント側のモデル・VRAM情報
-let clientFreeVram = 0.0;
-let availableModels = [];
-let currentModel = "";
-let isClientLoading = false; // クライアントが現在モデルロード中かどうか
-
-// DeepL 使用量キャッシュとトランスレーターインスタンス
-let cachedUsage = { count: 0, limit: 1000000, percent: "0.0" };
-const DEEPL_API_KEY = process.env.DEEPL_API_KEY || "";
-let deeplTranslator = null;         // 環境変数によるデフォルト
-let customDeeplTranslator = null;   // ユーザー指定のカスタム
-
-// デフォルト初期化 (DeepL が無ければ自動で Gemini API を使用)
-if (DEEPL_API_KEY && DEEPL_API_KEY !== "your-deepl-api-key-here") {
-  try {
-    deeplTranslator = new deepl.Translator(DEEPL_API_KEY);
-    console.log("✅ [DeepL] デフォルトの DeepL 翻訳エンジンを初期化しました。");
-    updateUsageCache(deeplTranslator);
-  } catch (err) {
-    console.warn("⚠️ [DeepL] 初期化に失敗しました (Gemini API 翻訳を使用します):", err.message);
-  }
-} else {
-  console.log("☁️ [Translation Engine] Gemini API 翻訳を使用します (DeepL 未設定)。");
-}
 
 // ダッシュボード用の言語設定
 let dashboardTargetLang = "JA";
@@ -283,90 +254,11 @@ function getVoiceMembersArray() {
   });
 }
 
-/**
- * ユーザー指定 of カスタムDeepL APIキーで翻訳エンジンを初期化・更新する
- */
-function updateDeepLKey(key) {
-  if (!key || key.trim() === "") {
-    customDeeplTranslator = null;
-    cachedUsage = { count: 0, limit: 1000000, percent: "0.0" };
-    console.log("ℹ️ [DeepL] カスタムAPIキーがクリアされました。");
-    broadcastToDashboards({ type: "deepl_usage_update", deeplUsage: cachedUsage });
-    return;
-  }
-  
-  try {
-    customDeeplTranslator = new deepl.Translator(key.trim());
-    console.log("✅ [DeepL] ユーザー指定のカスタムAPIキーで翻訳エンジンを初期化しました");
-    updateUsageCache(customDeeplTranslator);
-  } catch (err) {
-    console.error("❌ [DeepL] カスタムAPIキーの初期化に失敗しました:", err.message);
-  }
-}
 
-/**
- * DeepL の使用状況をキャッシュに更新する
- */
-async function updateUsageCache(translatorInstance) {
-  const translator = translatorInstance || customDeeplTranslator || deeplTranslator;
-  if (!translator) return;
-  
-  try {
-    const usage = await translator.getUsage();
-    if (usage.character) {
-      const count = usage.character.count;
-      const limit = usage.character.limit;
-      const percent = ((count / limit) * 100).toFixed(1);
-      cachedUsage = { count, limit, percent };
-      console.log(`📊 [DeepL Usage] ${count} / ${limit} (${percent}%)`);
-      
-      broadcastToDashboards({
-        type: "deepl_usage_update",
-        deeplUsage: cachedUsage
-      });
-    }
-  } catch (err) {
-    console.error("❌ [DeepL Usage] 取得失敗:", err.message);
-  }
-}
 
-/**
- * DeepL API でテキストを翻訳する (動的キー対応)
- */
-async function translateWithDeepL(text, targetLang, sourceLang) {
-  const activeTranslator = customDeeplTranslator || deeplTranslator;
-  
-  if (!activeTranslator) {
-    return { translated_text: "[翻訳スキップ: DeepL APIキーが設定されていません]", translation_skipped: true };
-  }
-  if (!text || !text.trim()) {
-    return { translated_text: "", translation_skipped: true };
-  }
-  
-  try {
-    // 言語コード補正
-    let tl = targetLang.toUpperCase();
-    if (tl === "EN") tl = "EN-US";
-    if (tl === "PT") tl = "PT-BR";
 
-    const result = await activeTranslator.translateText(
-      text,
-      sourceLang || null,
-      tl
-    );
-    
-    updateUsageCache(activeTranslator).catch(() => {});
-    
-    return {
-      translated_text: result.text,
-      detected_source_lang: result.detectedSourceLang,
-      translation_skipped: false,
-    };
-  } catch (err) {
-    console.error(`❌ [DeepL] 翻訳エラー: ${err.message}`);
-    return { translated_text: `[翻訳エラー: ${err.message}]`, translation_skipped: true };
-  }
-}
+
+
 
 /**
  * Gemini API でテキストを翻訳する (HTTP POST リクエスト、429エラー時の自動リトライ機能付き)
@@ -503,59 +395,23 @@ function updateGlobalTargetLang() {
   }
 }
 
-/**
- * 個別ダッシュボード接続用の DeepL 使用状況を更新する
- */
-async function updateWsUsageCache(ws) {
-  if (!ws.deeplTranslator) return;
-  try {
-    const usage = await ws.deeplTranslator.getUsage();
-    if (usage.character) {
-      const count = usage.character.count;
-      const limit = usage.character.limit;
-      const percent = ((count / limit) * 100).toFixed(1);
-      ws.cachedUsage = { count, limit, percent };
-      ws.send(JSON.stringify({
-        type: "deepl_usage_update",
-        deeplUsage: ws.cachedUsage
-      }));
-    }
-  } catch (err) {
-    console.error("❌ [DeepL Usage] 個別取得失敗:", err.message);
-  }
-}
-
-/**
- * ダッシュボード（ブラウザ）のWebSocket接続をハンドリング
- */
 function handleDashboardConnection(ws) {
   connectedDashboards.add(ws);
   console.log("💻 [Dashboard] ダッシュボードが接続しました");
 
   // 個別の設定を初期化
   ws.targetLang = "JA";
-  ws.deeplTranslator = null;
-  ws.cachedUsage = { count: 0, limit: 1000000, percent: "0.0" };
 
-  // 初回接続時に現在の各種設定とクライアント情報を送る
+  // 初回接続時に現在の各種設定を送る
   ws.send(JSON.stringify({
     type: "init",
     targetLang: ws.targetLang, // 個別設定
     detectLang: dashboardDetectLang,
-    deeplUsage: ws.deeplTranslator ? ws.cachedUsage : cachedUsage,
     connected: currentConnection !== null,
-    isModelLoading: isClientLoading, // 現在モデルロード中かどうかのフラグ
-    isGeminiMode: isGeminiMode,
     voiceMembers: getVoiceMembersArray(), // VCメンバー一覧と個別言語設定
     tunnelInfo: {
       publicUrl: publicUrl,
       globalIp: globalIp
-    },
-    clientStatus: {
-      hasClient: activeWsClient !== null,
-      free_vram_gb: clientFreeVram,
-      available_models: availableModels,
-      current_model: currentModel
     }
   }));
 
@@ -572,34 +428,7 @@ function handleDashboardConnection(ws) {
       } else if (data.type === "change_detect_lang") {
         dashboardDetectLang = data.lang;
         console.log(`🎤 [Dashboard] 検出言語を変更: ${dashboardDetectLang}`);
-      } else if (data.type === "change_model") {
-        console.log(`🔄 [Dashboard] ASRモデルの切り替え要求: [${data.model_id}]`);
-        if (activeWsClient && activeWsClient.readyState === 1) {
-          activeWsClient.send(JSON.stringify({
-            type: "change_model",
-            model_id: data.model_id
-          }));
-        } else {
-          console.warn("⚠️ [Dashboard] 接続中のローカルPCクライアントがないため、モデル切り替えを行えません");
-        }
-      } else if (data.type === "set_deepl_key") {
-        console.log("🔑 [Dashboard] 接続固有のカスタムDeepL APIキーを適用します");
-        if (data.key && data.key.trim() !== "") {
-          try {
-            ws.deeplTranslator = new deepl.Translator(data.key.trim());
-            updateWsUsageCache(ws); // 使用量を初期取得
-          } catch (err) {
-            console.error("❌ [DeepL] 個別キーの初期化に失敗:", err.message);
-          }
-        } else {
-          ws.deeplTranslator = null;
-          ws.cachedUsage = { count: 0, limit: 1000000, percent: "0.0" };
-          // 個別キー解除時は、環境変数のグローバルな使用状況を送り返す
-          ws.send(JSON.stringify({
-            type: "deepl_usage_update",
-            deeplUsage: cachedUsage
-          }));
-        }
+      
       } else if (data.type === "set_user_lang") {
         // ユーザーごとの検出言語設定を更新
         const userId = String(data.user_id);
@@ -666,215 +495,7 @@ function handleDashboardConnection(ws) {
   });
 }
 
-/**
- * ローカルPC（Transcriberクライアント）のWebSocket接続をハンドリング
- */
-function handleHybridConnection(ws) {
-  console.log("🔌 [Hybrid] ローカルPCクライアントが接続試行中...");
 
-  ws.on("message", async (message) => {
-    try {
-      const data = JSON.parse(message.toString());
-      
-      if (data.type === "register") {
-        if (data.vram_status === "ok" || data.vram_status === "loading") {
-          activeWsClient = ws;
-          lastVramError = "";
-          clientFreeVram = data.free_vram_gb || 0.0;
-          availableModels = data.available_models || [];
-          currentModel = data.current_model || "";
-          
-          console.log(`✅ [Hybrid] クライアント登録ステータス: ${data.vram_status} (空きVRAM: ${clientFreeVram.toFixed(2)} GB, 現在のモデル: ${currentModel})`);
-          
-          if (data.vram_status === "loading") {
-            isClientLoading = true;
-            // ロード中の場合、まずクライアント情報を送信してから、ロード中ステータスを送信してUIをロックする
-            broadcastToDashboards({
-              type: "client_status_update",
-              clientStatus: {
-                hasClient: true,
-                free_vram_gb: clientFreeVram,
-                available_models: availableModels,
-                current_model: currentModel
-              }
-            });
-            broadcastToDashboards({
-              type: "model_loading",
-              model_id: currentModel
-            });
-          } else if (data.vram_status === "ok") {
-            isClientLoading = false;
-            // ロード完了の場合、まずモデル変更完了を送信してUIのロックを解除し、最新ステータスを反映する
-            broadcastToDashboards({
-              type: "model_changed",
-              current_model: currentModel
-            });
-            broadcastToDashboards({
-              type: "client_status_update",
-              clientStatus: {
-                hasClient: true,
-                free_vram_gb: clientFreeVram,
-                available_models: availableModels,
-                current_model: currentModel
-              }
-            });
-          }
-        } else {
-          lastVramError = data.error_message || "不明なVRAMエラー";
-          console.error(`🚨 [Hybrid] クライアント登録失敗 (起動エラー): ${lastVramError}`);
-          isClientLoading = false;
-          
-          broadcastToDashboards({
-            type: "client_error",
-            error_message: lastVramError
-          });
-          ws.close();
-        }
-      } 
-      
-      else if (data.type === "model_loading_status") {
-        const loadingModel = data.model_id || "";
-        console.log(`⏳ [Hybrid] クライアントがモデルをロード中: [${loadingModel}]`);
-        isClientLoading = true;
-        
-        broadcastToDashboards({
-          type: "model_loading",
-          model_id: loadingModel
-        });
-      }
-      
-      else if (data.type === "model_changed_status") {
-        currentModel = data.current_model || "";
-        console.log(`✨ [Hybrid] ASRモデルが正常に切り替えられました: [${currentModel}]`);
-        isClientLoading = false;
-        
-        broadcastToDashboards({
-          type: "model_changed",
-          current_model: currentModel
-        });
-      }
-      
-      else if (data.type === "transcription_result") {
-        const originalText = data.original_text || "";
-        const detectedLang = data.detected_language || "auto";
-
-        const normalized = originalText.toLowerCase().replace(/[.,\/#!$%\^&\*;:{}=\-_`~()?]/g, "").trim();
-        const hallucinationList = ["yeah", "okay", "hmm", "uh", "um", "oh", "ah", "yep", "ding ding ding"];
-        if (hallucinationList.includes(normalized) && normalized.length <= 15) {
-          console.log(`🔇 [Hallucination Filtered] Ignored noise/short feedback: "${originalText}"`);
-          return;
-        }
-
-        console.log(`🎤 [Hybrid] [${data.username}] ${originalText} (${detectedLang})`);
-
-        // 有効な認識結果をユーザーの検出言語履歴に蓄積 (直近6件)
-        if (detectedLang && detectedLang !== "auto") {
-          const strUserId = String(data.user_id);
-          if (!userLangHistories.has(strUserId)) {
-            userLangHistories.set(strUserId, []);
-          }
-          const history = userLangHistories.get(strUserId);
-          history.push(detectedLang);
-          if (history.length > 6) {
-            history.shift();
-          }
-          // 自動制限の状態（履歴）が変わったため、即時にダッシュボードへ再同期して再描画！
-          broadcastVoiceMembers();
-        }
-
-        // 接続されている各ダッシュボード（ブラウザ）へ、個別に翻訳を行って送信する
-        for (const wsDash of connectedDashboards) {
-          if (wsDash.readyState === 1) {
-            // そのダッシュボード固有の希望翻訳言語
-            const currentTargetLang = wsDash.targetLang || targetLang || "JA";
-            
-            // 翻訳元と翻訳先が同一なら翻訳をスキップ
-            const srcPrefix = detectedLang.toLowerCase().substring(0, 2);
-            const tgtPrefix = currentTargetLang.toLowerCase().substring(0, 2);
-            
-            let translatedText = "";
-            let translationSkipped = true;
-            
-            // 優先順位：個別キー -> グローバルカスタムキー -> 環境変数キー
-            const activeTranslator = wsDash.deeplTranslator || customDeeplTranslator || deeplTranslator;
-            
-            if (activeTranslator && srcPrefix !== tgtPrefix) {
-              try {
-                let tl = currentTargetLang.toUpperCase();
-                if (tl === "EN") tl = "EN-US";
-                if (tl === "PT") tl = "PT-BR";
-
-                const result = await activeTranslator.translateText(
-                  originalText,
-                  null,
-                  tl
-                );
-                
-                translatedText = result.text;
-                translationSkipped = false;
-                
-                // 使用量キャッシュをバックグラウンドで更新
-                if (wsDash.deeplTranslator) {
-                  updateWsUsageCache(wsDash).catch(() => {});
-                } else {
-                  updateUsageCache(activeTranslator).catch(() => {});
-                }
-              } catch (err) {
-                console.error(`❌ [DeepL] 個別翻訳エラー: ${err.message}`);
-                translatedText = `[翻訳エラー: ${err.message}]`;
-              }
-            }
-
-            // ダッシュボード固有にカスタマイズされた結果を個別に送信！
-            wsDash.send(JSON.stringify({
-              type: "transcription",
-              user_id: data.user_id,
-              username: data.username,
-              avatar_url: data.avatar_url,
-              original_text: originalText,
-              detected_language: detectedLang,
-              translated_text: translatedText,
-              target_lang: currentTargetLang,
-              translation_skipped: translationSkipped,
-              deepl_usage: wsDash.cachedUsage || cachedUsage,
-              timestamp: data.timestamp || new Date().toLocaleTimeString("ja-JP")
-            }));
-          }
-        }
-      }
-    } catch (err) {
-      console.error("❌ [Hybrid] メッセージ処理エラー:", err);
-    }
-  });
-
-  ws.on("close", () => {
-    console.log("🔌 [Hybrid] ローカルPCクライアントが切断されました。");
-    if (activeWsClient === ws) {
-      activeWsClient = null;
-      clientFreeVram = 0.0;
-      availableModels = [];
-      currentModel = "";
-      isClientLoading = false;
-      
-      broadcastToDashboards({
-        type: "client_status_update",
-        clientStatus: {
-          hasClient: false,
-          free_vram_gb: 0.0,
-          available_models: [],
-          current_model: ""
-        }
-      });
-    }
-  });
-
-  ws.on("error", (err) => {
-    console.error("❌ [Hybrid] クライアントエラー:", err);
-    if (activeWsClient === ws) {
-      activeWsClient = null;
-    }
-  });
-}
 
 /**
  * すべてのダッシュボードにブロードキャスト
@@ -888,19 +509,7 @@ function broadcastToDashboards(data) {
   }
 }
 
-/**
- * アクティブクライアント接続の有無を確認
- */
-function hasActiveClient() {
-  return activeWsClient !== null;
-}
 
-/**
- * 直近のVRAMエラーを取得
- */
-function getLastVramError() {
-  return lastVramError;
-}
 
 /**
  * ボイスチャンネルに参加
@@ -1312,35 +921,14 @@ async function sendFinalTranscription(userId) {
           translationSkipped = false;
         } else {
           // 希望言語が異なる場合は個別テキスト翻訳を実行 (キャッシュとキューを考慮)
-          const activeTranslator = wsDash.deeplTranslator || customDeeplTranslator || deeplTranslator;
-          const engineType = activeTranslator ? "deepl" : "gemini";
-          const cacheKey = `${currentTargetLang.toUpperCase()}_${engineType}`;
+          const cacheKey = `${currentTargetLang.toUpperCase()}_gemini`;
 
           if (translationCache.has(cacheKey)) {
             const cached = translationCache.get(cacheKey);
             translatedText = cached.translatedText;
             translationSkipped = cached.translationSkipped;
           } else {
-            if (activeTranslator) {
-              try {
-                let tl = currentTargetLang.toUpperCase();
-                if (tl === "EN") tl = "EN-US";
-                if (tl === "PT") tl = "PT-BR";
-
-                const result = await activeTranslator.translateText(finalInput, null, tl);
-                translatedText = result.text;
-                translationSkipped = false;
-
-                if (wsDash.deeplTranslator) {
-                  updateWsUsageCache(wsDash).catch(() => {});
-                } else {
-                  updateUsageCache(activeTranslator).catch(() => {});
-                }
-              } catch (err) {
-                console.error(`❌ [DeepL] 音声の個別翻訳エラー: ${err.message}`);
-                translatedText = `[翻訳エラー: ${err.message}]`;
-              }
-            } else if (GEMINI_API_KEY) {
+            if (GEMINI_API_KEY) {
               try {
                 const result = await translateWithGemini(finalInput, currentTargetLang);
                 translatedText = result.translated_text;
@@ -1365,7 +953,6 @@ async function sendFinalTranscription(userId) {
           translated_text: translatedText,
           target_lang: currentTargetLang,
           translation_skipped: translationSkipped,
-          deepl_usage: wsDash.cachedUsage || cachedUsage,
           timestamp: new Date().toLocaleTimeString("ja-JP")
         }));
       }
@@ -1586,41 +1173,32 @@ function sendStreamChunk(userId) {
   stream.buffer = Buffer.alloc(0);
 
   const strUserId = String(userId);
-  const clientInfo = getOrCreateGeminiClient(strUserId);
+  const rms = calculateRMS(audioBuffer);
 
-  if (clientInfo && clientInfo.isReady) {
-    const rms = calculateRMS(audioBuffer);
-    
-    // ダッシュボードに音量(RMS)を送信
-    broadcastToDashboards({
-      type: "user_volume",
-      user_id: strUserId,
-      rms: Math.round(rms)
-    });
+  // ダッシュボードに音量(RMS)を送信
+  broadcastToDashboards({
+    type: "user_volume",
+    user_id: strUserId,
+    rms: Math.round(rms)
+  });
 
-    const userThreshold = userNoiseThresholds.get(strUserId) ?? NOISE_THRESHOLD_RMS;
+  const userThreshold = userNoiseThresholds.get(strUserId) ?? NOISE_THRESHOLD_RMS;
+  
+  // アクティブ（声あり）判定
+  const isSpeech = rms >= userThreshold;
 
-    if (rms >= userThreshold) {
-      // 閾値を超えた場合: 音声アクティブ状態にする (既存の無音猶予タイマーはクリア)
-      stream.isVolumeActive = true;
-      stream.lastSpeechTime = Date.now(); // 発話検知時刻を更新
-      if (stream.volumeActiveTimer) {
-        clearTimeout(stream.volumeActiveTimer);
-        stream.volumeActiveTimer = null;
-      }
-    } else {
-      // 閾値を下回った場合: すでにアクティブなら 1.5秒のハングオーバー(猶予)タイマーを起動
-      if (stream.isVolumeActive && !stream.volumeActiveTimer) {
-        stream.volumeActiveTimer = setTimeout(() => {
-          stream.isVolumeActive = false;
-          stream.volumeActiveTimer = null;
-          console.log(`🔇 [Gemini Noise Gate] ゲートが閉じました (User: ${userId}, RMS: ${rms.toFixed(1)} < ${userThreshold})`);
-        }, 1500); // 1.5秒の無音継続でゲートクローズ (レスポンス高速化のため短縮)
-      }
+  if (isSpeech) {
+    // 閾値を超えた場合: 音声アクティブ状態にし、WebSocketセッションを（必要なら）開始
+    stream.isVolumeActive = true;
+    stream.lastSpeechTime = Date.now();
+    if (stream.volumeActiveTimer) {
+      clearTimeout(stream.volumeActiveTimer);
+      stream.volumeActiveTimer = null;
     }
 
-    // ゲートが開いている（アクティブ）場合のみ音声を Gemini に流す
-    if (stream.isVolumeActive) {
+    const clientInfo = getOrCreateGeminiClient(strUserId);
+
+    if (clientInfo && clientInfo.isReady) {
       const base64Audio = audioBuffer.toString("base64");
       try {
         clientInfo.ws.send(JSON.stringify({
@@ -1636,12 +1214,52 @@ function sendStreamChunk(userId) {
       } catch (err) {
         console.error(`❌ [Gemini Live API] ストリーム送信失敗 (User: ${userId}):`, err.message);
       }
+    } else {
+      // 準備ができていない場合、保留する
+      if (stream.buffer.length < 160000) {
+        stream.buffer = Buffer.concat([audioBuffer, stream.buffer]);
+      }
     }
   } else {
-    // Geminiクライアントが接続中または未準備の場合、音声の頭切れを防ぐためバッファに保留する
-    // メモリリーク防止のため最大5秒分（16000Hz * 2bytes * 5s = 160000 bytes）までに制限
-    if (stream.buffer.length < 160000) {
-      stream.buffer = Buffer.concat([audioBuffer, stream.buffer]);
+    // 閾値を下回った場合
+    if (stream.isVolumeActive) {
+      // すでにアクティブ状態なら、既存のセッションを通じて音声を送信し続ける（語尾の途切れ防止）
+      const clientInfo = geminiClients.get(strUserId);
+      
+      if (clientInfo && clientInfo.isReady) {
+        const base64Audio = audioBuffer.toString("base64");
+        try {
+          clientInfo.ws.send(JSON.stringify({
+            realtimeInput: {
+              mediaChunks: [
+                {
+                  mimeType: "audio/pcm",
+                  data: base64Audio
+                }
+              ]
+            }
+          }));
+        } catch (err) {
+          console.error(`❌ [Gemini Live API] ストリーム送信失敗 (User: ${userId}):`, err.message);
+        }
+      } else {
+        // 準備ができていない場合は保留
+        if (stream.buffer.length < 160000) {
+          stream.buffer = Buffer.concat([audioBuffer, stream.buffer]);
+        }
+      }
+
+      // ハングオーバータイマー（1.5秒）を起動
+      if (!stream.volumeActiveTimer) {
+        stream.volumeActiveTimer = setTimeout(() => {
+          stream.isVolumeActive = false;
+          stream.volumeActiveTimer = null;
+          console.log(`🔇 [Gemini Noise Gate] ゲートが閉じました (User: ${userId}, RMS: ${rms.toFixed(1)} < ${userThreshold})`);
+        }, 1500);
+      }
+    } else {
+      // アクティブでなく、かつノイズしきい値未満であれば、WebSocketは接続せず、データも単に破棄する
+      // (何もしない = audioBufferは破棄される)
     }
   }
 }
@@ -1692,19 +1310,12 @@ function cleanupUserStream(userId) {
  * 特定ユーザーの音声リスニングを開始
  */
 function startListening(connection, userId) {
-  const isGemini = isGeminiMode;
-  
-  const endBehavior = isGemini
-    ? { behavior: EndBehaviorType.Manual }
-    : { behavior: EndBehaviorType.AfterSilence, duration: 500 };
-
   const opusStream = connection.receiver.subscribe(userId, {
-    end: endBehavior,
+    end: { behavior: EndBehaviorType.Manual },
   });
 
-  const sampleRate = isGemini ? 16000 : SAMPLE_RATE;
   const decoder = new prism.opus.Decoder({
-    rate: sampleRate,
+    rate: 16000,
     channels: CHANNELS,
     frameSize: 960,
   });
@@ -1752,21 +1363,19 @@ function startListening(connection, userId) {
   pcmStream.on("data", (chunk) => {
     state.buffer = Buffer.concat([state.buffer, chunk]);
     
-    // Geminiモードで常時購読している場合のみ、5秒の無音監視タイマーを起動・更新
-    if (isGemini) {
-      if (state.silenceTimer) {
-        clearTimeout(state.silenceTimer);
-      }
-      state.silenceTimer = setTimeout(() => {
-        console.log(`🔌 [Discord Stream] 5秒間の沈黙を検知したため、ユーザー ${userId} の音声ストリームを解放します。`);
-        cleanupUserStream(userId);
-      }, 5000); // 5秒の沈黙でストリーム解放
-      
-      // 100msごとに送信 (16000 * 2 * 0.1 = 3200 bytes)
-      const triggerSize = 3200;
-      if (state.buffer.length >= triggerSize) {
-        sendStreamChunk(userId);
-      }
+    // 5秒の無音監視タイマーを起動・更新
+    if (state.silenceTimer) {
+      clearTimeout(state.silenceTimer);
+    }
+    state.silenceTimer = setTimeout(() => {
+      console.log(`🔌 [Discord Stream] 5秒間の沈黙を検知したため、ユーザー ${userId} の音声ストリームを解放します。`);
+      cleanupUserStream(userId);
+    }, 5000); // 5秒の沈黙でストリーム解放
+    
+    // 100msごとに送信 (16000 * 2 * 0.1 = 3200 bytes)
+    const triggerSize = 3200;
+    if (state.buffer.length >= triggerSize) {
+      sendStreamChunk(userId);
     }
   });
 
@@ -1775,9 +1384,6 @@ function startListening(connection, userId) {
     if (state.silenceTimer) {
       clearTimeout(state.silenceTimer);
       state.silenceTimer = null;
-    }
-    if (!isGemini && state.buffer.length > 0) {
-      flushBuffer(userId);
     }
   });
 
@@ -1808,125 +1414,7 @@ function calculateRMS(buffer) {
   return Math.sqrt(sum / numSamples);
 }
 
-/**
- * バッファをフラッシュしてローカルPCクライアントまたはGemini APIに送信
- */
-async function flushBuffer(userId) {
-  const stream = activeStreams.get(userId);
-  if (!stream || stream.buffer.length === 0) return;
 
-  if (isGeminiMode) {
-    const audioBuffer = Buffer.from(stream.buffer);
-    stream.buffer = Buffer.alloc(0);
-    stream.lastSendTime = Date.now();
-    stream.flushTimer = null;
-
-    // 16kHz, 16bit PCM mono における最小サイズ制限 (0.8秒分 = 16000 * 2 * 0.8 = 25600 bytes)
-    if (audioBuffer.length < 25600) {
-      return;
-    }
-
-    const rms = calculateRMS(audioBuffer);
-    const strUserId = String(userId);
-
-    // ダッシュボードに直近の音量(RMS)を送信
-    broadcastToDashboards({
-      type: "user_volume",
-      user_id: strUserId,
-      rms: Math.round(rms)
-    });
-
-    const userThreshold = userNoiseThresholds.get(strUserId) ?? NOISE_THRESHOLD_RMS;
-    if (rms < userThreshold) {
-      console.log(`🔇 [Gemini Noise Gate] 音量が小さいため送信をスキップしました (RMS: ${rms.toFixed(1)} < ${userThreshold})`);
-      return;
-    }
-
-    const clientInfo = getOrCreateGeminiClient(strUserId);
-    if (clientInfo && clientInfo.isReady) {
-      const base64Audio = audioBuffer.toString("base64");
-      try {
-        clientInfo.ws.send(JSON.stringify({
-          realtimeInput: {
-            mediaChunks: [
-              {
-                mimeType: "audio/pcm",
-                data: base64Audio
-              }
-            ]
-          }
-        }));
-      } catch (err) {
-        console.error(`❌ [Gemini Live API] 送信失敗 (User: ${userId}):`, err.message);
-      }
-    } else {
-      // 準備ができていない場合はバッファを一旦戻して待つ (メモリリーク防止のため最大5秒分 = 16000 * 2 * 5 = 160000 bytesまで)
-      if (audioBuffer.length < 160000) {
-        stream.buffer = Buffer.concat([audioBuffer, stream.buffer]);
-      }
-    }
-    return;
-  }
-
-  if (!activeWsClient) {
-    console.error("❌ [Hybrid] 送信エラー: 接続中のローカルPCクライアントがありません！");
-    stream.buffer = Buffer.alloc(0);
-    return;
-  }
-
-  const audioBuffer = Buffer.from(stream.buffer);
-  stream.buffer = Buffer.alloc(0);
-  stream.lastSendTime = Date.now();
-  stream.flushTimer = null;
-
-  if (audioBuffer.length < 76800) {
-    return;
-  }
-
-  // 音量（RMS）によるノイズ・無音判定 (ノイズゲート)
-  const rms = calculateRMS(audioBuffer);
-  const strUserId = String(userId);
-
-  // ダッシュボードに直近の音量(RMS)を送信
-  broadcastToDashboards({
-    type: "user_volume",
-    user_id: strUserId,
-    rms: Math.round(rms)
-  });
-
-  const userThreshold = userNoiseThresholds.get(strUserId) ?? NOISE_THRESHOLD_RMS;
-  if (rms < userThreshold) {
-    // 呼吸音や小さな環境音・マイクノイズはスキップして誤翻訳を防ぐ
-    console.log(`🔇 [Noise Gate] 音量が小さいため送信をスキップしました (RMS: ${rms.toFixed(1)} < ${userThreshold})`);
-    return;
-  }
-
-  const audioBase64 = audioBuffer.toString("base64");
-
-  // 1. 手動選択された言語制限を取得
-  let finalDetectLang = userLanguages.get(strUserId) || "";
-
-  // 2. 手動選択がない(またはauto)場合はダッシュボードの全体検出設定または "auto"
-  if (!finalDetectLang || finalDetectLang === "auto") {
-    finalDetectLang = dashboardDetectLang || "auto";
-  }
-
-  try {
-    activeWsClient.send(JSON.stringify({
-      type: "transcribe_request",
-      audio_base64: audioBase64,
-      user_id: userId,
-      username: stream.username,
-      avatar_url: stream.avatarUrl || "",
-      sample_rate: SAMPLE_RATE,
-      channels: CHANNELS,
-      target_lang: dashboardTargetLang || targetLang,
-      detect_lang: finalDetectLang
-    }));
-  } catch (error) {
-    console.error(`❌ [Hybrid] クライアントへの音声送信に失敗: ${error.message}`);
-  }
-}
 
 /**
  * ユーザー情報を更新する
@@ -1955,15 +1443,7 @@ function getStatus() {
   return {
     connected: currentConnection !== null,
     activeStreams: activeStreams.size,
-    targetLang: dashboardTargetLang || targetLang,
-    hasClient: activeWsClient !== null,
-    isGeminiMode: isGeminiMode,
-    deeplUsage: cachedUsage,
-    clientStatus: {
-      free_vram_gb: clientFreeVram,
-      available_models: availableModels,
-      current_model: currentModel
-    }
+    targetLang: dashboardTargetLang || targetLang
   };
 }
 
@@ -1987,12 +1467,8 @@ async function handleDiscordChatMessage(username, avatarUrl, text) {
           let translatedText = "";
           let translationSkipped = true;
           
-          // 優先順位：個別キー -> グローバルカスタムキー -> デフォルトキー
-          const activeTranslator = wsDash.deeplTranslator || customDeeplTranslator || deeplTranslator;
-          
           // キャッシュキーの定義 (言語 + 翻訳エンジンの種類)
-          const engineType = activeTranslator ? "deepl" : "gemini";
-          const cacheKey = `${currentTargetLang.toUpperCase()}_${engineType}`;
+          const cacheKey = `${currentTargetLang.toUpperCase()}_gemini`;
 
           if (translationCache.has(cacheKey)) {
             // すでに同一言語＆同一エンジンで翻訳済みの場合はキャッシュを利用
@@ -2000,39 +1476,13 @@ async function handleDiscordChatMessage(username, avatarUrl, text) {
             translatedText = cached.translatedText;
             translationSkipped = cached.translationSkipped;
           } else {
-            if (activeTranslator) {
-              try {
-                let tl = currentTargetLang.toUpperCase();
-                if (tl === "EN") tl = "EN-US";
-                if (tl === "PT") tl = "PT-BR";
-
-                const result = await activeTranslator.translateText(
-                  text,
-                  null,
-                  tl
-                );
-                
-                translatedText = result.text;
-                translationSkipped = false;
-                
-                // 使用量キャッシュをバックグラウンドで更新
-                if (wsDash.deeplTranslator) {
-                  updateWsUsageCache(wsDash).catch(() => {});
-                } else {
-                  updateUsageCache(activeTranslator).catch(() => {});
-                }
-              } catch (err) {
-                console.error(`❌ [DeepL] Discordチャットの個別翻訳エラー: ${err.message}`);
-                translatedText = `[翻訳エラー: ${err.message}]`;
-              }
-            } else if (GEMINI_API_KEY) {
-              // DeepLが未設定で、かつGeminiクラウド翻訳モードが有効ならGeminiでフォールバック！
+            if (GEMINI_API_KEY) {
               try {
                 const result = await translateWithGemini(text, currentTargetLang);
                 translatedText = result.translated_text;
                 translationSkipped = result.translation_skipped;
               } catch (err) {
-                console.error(`❌ [Gemini Translate] フォールバック翻訳エラー: ${err.message}`);
+                console.error(`❌ [Gemini Translate] 翻訳エラー: ${err.message}`);
                 translatedText = `[翻訳エラー: ${err.message}]`;
               }
             }
@@ -2074,15 +1524,11 @@ module.exports = {
   setTargetLanguage,
   getStatus,
   handleDashboardConnection,
-  handleHybridConnection,
-  hasActiveClient,
-  getLastVramError,
   getCurrentChannelId,
   getActiveTextChannelId,
   addVoiceMember,
   removeVoiceMember,
   startTunnel,
-  translateWithDeepL,
   broadcastToDashboards,
   handleDiscordChatMessage,
 };

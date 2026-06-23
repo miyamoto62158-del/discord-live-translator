@@ -14,13 +14,7 @@
     <!-- 接続警告バナー -->
     <div id="connection-warning" class="connection-warning show">
         <span class="warning-icon">⚠️</span>
-        <span class="warning-text">Botサーバーと未接続です。裏で起動ランチャー（start.bat）が正しく立ち上がっていることを確認してください。再接続を試みています...</span>
-    </div>
-
-    <!-- Gemini無料枠警告バナー -->
-    <div id="gemini-warning" class="connection-warning gemini-warning" style="background: rgba(230, 81, 0, 0.95); border-bottom: 1px solid #ffb300;">
-        <span class="warning-icon">🔒</span>
-        <span class="warning-text">クラウド翻訳モード (Gemini無料枠) で動作中。会話データはGoogleのサービス改善（モデルの学習等）に二次利用される可能性があります。</span>
+        <span class="warning-text">Botサーバーと未接続です。裏で起動スクリプト（start.bat）が正しく立ち上がっていることを確認してください。再接続を試みています...</span>
     </div>
 
     <!-- ヘッダー -->
@@ -40,22 +34,6 @@
             </div>
         </div>
         <div class="header-right">
-            <!-- 音声モデル選択 -->
-            <div class="custom-select-container" style="margin-right: 15px;">
-                <label class="select-label">音声モデル:</label>
-                <div class="custom-select" id="model-select-wrapper">
-                    <div class="custom-select-trigger" id="model-select-trigger">
-                        <span id="model-select-text">接続待ち...</span>
-                        <div class="arrow"></div>
-                    </div>
-                    <div class="custom-options" id="model-options">
-                        <!-- JavaScriptで動的に構築。ブラウザ翻訳可能です -->
-                    </div>
-                </div>
-                <span id="vram-info" style="font-size: 0.72rem; color: var(--text-muted); margin-left: 4px;">(--GB)</span>
-            </div>
-
-
             <!-- 翻訳先言語選択 -->
             <div class="custom-select-container" style="margin-right: 15px;">
                 <label class="select-label">翻訳先:</label>
@@ -75,12 +53,6 @@
                         <div class="custom-option" data-value="DE">🇩🇪 ドイツ語</div>
                     </div>
                 </div>
-            </div>
-
-            <!-- API Key configurations (Simplifed, DeepL no longer required) -->
-            <div class="lang-selector" style="display: none;">
-                <input type="password" id="deepl-key-input" style="display: none;">
-                <button id="apply-key-btn" style="display: none;">適用</button>
             </div>
         </div>
     </header>
