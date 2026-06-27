@@ -261,15 +261,29 @@ function getVoiceMembersArray() {
 
 
 /**
- * Gemini API でテキストを翻訳する (HTTP POST リクエスト、429エラー時の自動リトライ機能付き)
+ * Gemini API でテキストを翻訳する (自動モデルフォールバック & 指数バックオフリトライ機能付き)
  */
-async function translateWithGemini(text, targetLang, attempt = 1) {
+async function translateWithGemini(text, targetLang, attempt = 1, modelIndex = 0) {
   if (!GEMINI_API_KEY) {
     return { translated_text: "[翻訳スキップ: Gemini APIキーが設定されていません]", translation_skipped: true };
   }
   if (!text || !text.trim()) {
     return { translated_text: "", translation_skipped: true };
   }
+
+  // 利用可能なモデルのリスト (429制限時に自動で次のモデルに切り替える)
+  const models = [
+    "gemini-1.5-flash",
+    "gemini-2.5-flash",
+    "gemini-3.1-flash-lite"
+  ];
+
+  if (modelIndex >= models.length) {
+    // すべてのモデルで失敗した場合
+    return { translated_text: `[翻訳不可: すべてのAPIモデル制限に達しました]`, translation_skipped: true };
+  }
+
+  const activeModel = models[modelIndex];
 
   // BCP-47言語コードへのマッピング（言語名にするのが安全）
   const langNamesMap = {
@@ -287,8 +301,7 @@ async function translateWithGemini(text, targetLang, attempt = 1) {
   };
   const targetLangName = langNamesMap[targetLang.toUpperCase()] || targetLang;
 
-  // gemini-3.1-flash-lite は非常に軽量で消費トークン(TPM)が極めて小さいため、音声通話中のAPIキー制限に干渉せず429エラーを防止できます
-  const url = `https://generativelanguage.googleapis.com/v1beta/models/gemini-3.1-flash-lite:generateContent?key=${GEMINI_API_KEY}`;
+  const url = `https://generativelanguage.googleapis.com/v1beta/models/${activeModel}:generateContent?key=${GEMINI_API_KEY}`;
   const payload = {
     contents: [
       {
@@ -323,12 +336,28 @@ async function translateWithGemini(text, targetLang, attempt = 1) {
         errorDetail = errorText;
       }
 
-      // 429 (Too Many Requests) の場合、最大3回まで指数バックオフで自動リトライ
-      if (response.status === 429 && attempt <= 3) {
-        const delay = Math.round(Math.pow(1.5, attempt) * 1000); // 1.5s, 2.25s, 3.375s
-        console.warn(`⚠️ [Gemini Translate] 429 レート制限（TPM/RPM等）を検知しました (${errorDetail})。${delay}ms 後にリトライします (試行 ${attempt}/3)...`);
-        await new Promise(resolve => setTimeout(resolve, delay));
-        return translateWithGemini(text, targetLang, attempt + 1);
+      // 429 (Too Many Requests / Quota Exceeded) の場合
+      if (response.status === 429) {
+        const errStr = errorDetail.toLowerCase();
+        // クォータ超過（1日の限界など）の場合は、即座に次のモデルにフォールバックする
+        const isQuotaExceeded = errStr.includes("quota") || errStr.includes("limit") || errStr.includes("exceeded");
+        
+        if (isQuotaExceeded) {
+          console.warn(`⚠️ [Gemini Translate] モデル ${activeModel} のクォータ制限に達しました。次のモデルへフォールバックします (${modelIndex + 1}/${models.length})...`);
+          return translateWithGemini(text, targetLang, 1, modelIndex + 1);
+        }
+
+        // 短時間のレート制限（RPMなど）の場合は、同一モデルでバックオフリトライ
+        if (attempt <= 3) {
+          const delay = Math.round(Math.pow(1.5, attempt) * 1000); // 1.5s, 2.25s, 3.375s
+          console.warn(`⚠️ [Gemini Translate] ${activeModel} が一時的な制限を検知しました。${delay}ms 後に再試行します (試行 ${attempt}/3)...`);
+          await new Promise(resolve => setTimeout(resolve, delay));
+          return translateWithGemini(text, targetLang, attempt + 1, modelIndex);
+        } else {
+          // リトライ上限に達した場合は次のモデルに切り替える
+          console.warn(`⚠️ [Gemini Translate] ${activeModel} のリトライ上限に達しました。次のモデルへフォールバックします...`);
+          return translateWithGemini(text, targetLang, 1, modelIndex + 1);
+        }
       }
       throw new Error(`HTTP error! status: ${response.status}, detail: ${errorDetail}`);
     }
@@ -344,7 +373,12 @@ async function translateWithGemini(text, targetLang, attempt = 1) {
       throw new Error("Invalid response format from Gemini API");
     }
   } catch (err) {
-    console.error(`❌ [Gemini Translate] 翻訳エラー (試行 ${attempt}/3): ${err.message}`);
+    console.error(`❌ [Gemini Translate] 翻訳エラー (モデル: ${activeModel}, 試行 ${attempt}/3): ${err.message}`);
+    // 一般エラーの場合も、可能なら次のモデルにフォールバックして救う
+    if (modelIndex + 1 < models.length) {
+      console.warn(`⚠️ [Gemini Translate] エラー発生のため、次のモデルへフォールバックします...`);
+      return translateWithGemini(text, targetLang, 1, modelIndex + 1);
+    }
     return { translated_text: `[翻訳エラー: ${err.message}]`, translation_skipped: true };
   }
 }
