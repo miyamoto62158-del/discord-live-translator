@@ -354,45 +354,36 @@ async function translateWithGemini(text, targetLang, attempt = 1) {
  * 最も多く選択されている言語を全体の dashboardTargetLang として自動適用する。
  * 全体の翻訳先が変更された場合は、Gemini Live API セッションをリセットする。
  */
-function updateGlobalTargetLang() {
-  if (connectedDashboards.size === 0) return;
+/**
+ * 全体の翻訳先言語を変更し、Gemini Live API セッションをリセット、全ダッシュボードに通知する
+ */
+function changeGlobalTargetLang(lang) {
+  if (!lang) return;
+  const newLang = lang.toUpperCase();
+  if (newLang === dashboardTargetLang) return;
 
-  const counts = {};
-  for (const ws of connectedDashboards) {
-    const lang = ws.targetLang || "JA";
-    counts[lang] = (counts[lang] || 0) + 1;
-  }
+  console.log(`🔄 [Language Router] 全体の翻訳先言語を ${dashboardTargetLang} から ${newLang} に切り替えます。`);
+  dashboardTargetLang = newLang;
+  targetLang = newLang; // コマンド側の変数とも同期
 
-  // 最頻値を取得。同数の場合は現在の dashboardTargetLang を優先
-  let bestLang = dashboardTargetLang || "JA";
-  let maxCount = 0;
-
-  for (const lang of Object.keys(counts)) {
-    if (counts[lang] > maxCount) {
-      maxCount = counts[lang];
-      bestLang = lang;
-    } else if (counts[lang] === maxCount && lang === dashboardTargetLang) {
-      bestLang = lang;
+  // Geminiクラウド翻訳モードのとき、全体翻訳先が変わったら
+  // 既存のすべての Gemini セッションをリセットし、新しい言語で再セットアップさせる
+  if (isGeminiMode) {
+    console.log(`🔄 [Gemini Live API] 全体翻訳先の変更に伴い、すべてのアクティブセッションをリセットします。`);
+    for (const [uid, clientInfo] of geminiClients) {
+      try {
+        if (clientInfo.sendTimer) clearTimeout(clientInfo.sendTimer);
+        clientInfo.ws.close();
+      } catch (e) {}
     }
+    geminiClients.clear();
   }
 
-  if (bestLang !== dashboardTargetLang) {
-    console.log(`🔄 [Language Router] 全体の代表翻訳先言語を ${dashboardTargetLang} から ${bestLang} に切り替えます (多数決)。`);
-    dashboardTargetLang = bestLang;
-
-    // Geminiクラウド翻訳モードのとき、全体翻訳先が変わったら
-    // 既存のすべての Gemini セッションをリセットし、新しい言語で再セットアップさせる
-    if (isGeminiMode) {
-      console.log(`🔄 [Gemini Live API] 全体翻訳先の変更に伴い、すべてのアクティブセッションをリセットします。`);
-      for (const [uid, clientInfo] of geminiClients) {
-        try {
-          if (clientInfo.sendTimer) clearTimeout(clientInfo.sendTimer);
-          clientInfo.ws.close();
-        } catch (e) {}
-      }
-      geminiClients.clear();
-    }
-  }
+  // 全ダッシュボードに通知して同期させる
+  broadcastToDashboards({
+    type: "global_target_lang_update",
+    lang: newLang
+  });
 }
 
 function handleDashboardConnection(ws) {
@@ -405,7 +396,7 @@ function handleDashboardConnection(ws) {
   // 初回接続時に現在の各種設定を送る
   ws.send(JSON.stringify({
     type: "init",
-    targetLang: ws.targetLang, // 個別設定
+    targetLang: dashboardTargetLang, // グローバル設定
     detectLang: dashboardDetectLang,
     connected: currentConnection !== null,
     voiceMembers: getVoiceMembersArray(), // VCメンバー一覧と個別言語設定
@@ -420,11 +411,8 @@ function handleDashboardConnection(ws) {
       const data = JSON.parse(message.toString());
       
       if (data.type === "change_language" || data.type === "change_target") {
-        ws.targetLang = data.lang; // この接続の翻訳先を更新
-        console.log(`🌍 [Dashboard] 接続固有の翻訳先言語を変更: ${ws.targetLang}`);
-        
-        // 全体の代表翻訳先言語を再計算
-        updateGlobalTargetLang();
+        console.log(`🌍 [Dashboard] 翻訳先言語の変更要求: ${data.lang}`);
+        changeGlobalTargetLang(data.lang);
       } else if (data.type === "change_detect_lang") {
         dashboardDetectLang = data.lang;
         console.log(`🎤 [Dashboard] 検出言語を変更: ${dashboardDetectLang}`);
@@ -484,9 +472,6 @@ function handleDashboardConnection(ws) {
   ws.on("close", () => {
     connectedDashboards.delete(ws);
     console.log("💻 [Dashboard] ダッシュボードが切断されました");
-    
-    // 全体の代表翻訳先言語を再計算
-    updateGlobalTargetLang();
   });
 
   ws.on("error", (err) => {
@@ -895,52 +880,19 @@ async function sendFinalTranscription(userId) {
     const username = knownUsers.get(userId)?.username || `User_${userId.slice(-4)}`;
     const avatarUrl = knownUsers.get(userId)?.avatarUrl || "";
     
-    // ダッシュボードごとの個別翻訳キャッシュ (キー: 言語_エンジン -> { translatedText, translationSkipped })
-    const translationCache = new Map();
-
-    // 各ダッシュボードに個別翻訳して送信
+    // 各ダッシュボードに送信 (全体の翻訳設定 dashboardTargetLang を適用)
     for (const wsDash of connectedDashboards) {
       if (wsDash.readyState === 1) {
-        const currentTargetLang = wsDash.targetLang || targetLang || "JA";
-        
-        // 言語コードの比較用プレフィックス
         const srcPrefix = (userLanguages.get(userId) || "auto").toLowerCase().substring(0, 2);
-        const tgtPrefix = currentTargetLang.toLowerCase().substring(0, 2);
-        const defaultTgtPrefix = (dashboardTargetLang || "JA").toLowerCase().substring(0, 2);
+        const tgtPrefix = (dashboardTargetLang || "JA").toLowerCase().substring(0, 2);
 
-        let translatedText = "";
-        let translationSkipped = true;
+        let translatedText = finalOutput;
+        let translationSkipped = false;
 
         if (tgtPrefix === srcPrefix) {
-          // 原文の言語と希望言語が同じなら翻訳不要
+          // 原文の言語と翻訳先言語が同じなら翻訳不要
           translatedText = finalInput;
           translationSkipped = true;
-        } else if (tgtPrefix === defaultTgtPrefix) {
-          // 希望言語がLive APIのデフォルト翻訳先と同じなら、高品質なLive API翻訳結果をそのまま使用
-          translatedText = finalOutput;
-          translationSkipped = false;
-        } else {
-          // 希望言語が異なる場合は個別テキスト翻訳を実行 (キャッシュとキューを考慮)
-          const cacheKey = `${currentTargetLang.toUpperCase()}_gemini`;
-
-          if (translationCache.has(cacheKey)) {
-            const cached = translationCache.get(cacheKey);
-            translatedText = cached.translatedText;
-            translationSkipped = cached.translationSkipped;
-          } else {
-            if (GEMINI_API_KEY) {
-              try {
-                const result = await translateWithGemini(finalInput, currentTargetLang);
-                translatedText = result.translated_text;
-                translationSkipped = result.translation_skipped;
-              } catch (err) {
-                console.error(`❌ [Gemini Translate] 音声の個別翻訳エラー: ${err.message}`);
-                translatedText = `[翻訳エラー: ${err.message}]`;
-              }
-            }
-
-            translationCache.set(cacheKey, { translatedText, translationSkipped });
-          }
         }
 
         wsDash.send(JSON.stringify({
@@ -951,7 +903,7 @@ async function sendFinalTranscription(userId) {
           original_text: finalInput,
           detected_language: "auto",
           translated_text: translatedText,
-          target_lang: currentTargetLang,
+          target_lang: dashboardTargetLang,
           translation_skipped: translationSkipped,
           timestamp: new Date().toLocaleTimeString("ja-JP")
         }));
@@ -1432,8 +1384,7 @@ function updateUserInfo(userId, username, avatarUrl) {
  * 翻訳先言語を変更する
  */
 function setTargetLanguage(lang) {
-  dashboardTargetLang = lang;
-  console.log(`🌐 翻訳先言語を変更: ${lang}`);
+  changeGlobalTargetLang(lang);
 }
 
 /**

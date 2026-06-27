@@ -85,12 +85,6 @@ function connect() {
     ws.onopen = () => {
         isConnected = true;
         updateConnectionStatus(true);
-        
-        // 初期カスタムセレクトの選択状態を送信
-        const activeTarget = elements.targetLangOptions.querySelector('.custom-option.selected')?.getAttribute('data-value') || 'JA';
-        
-        ws.send(JSON.stringify({ type: 'change_language', lang: activeTarget }));
-        
         // Connection established
     };
 
@@ -118,6 +112,9 @@ function handleMessage(data) {
                 renderVoiceMembers();
             }
             updateVoiceStatus(data.connected);
+            if (data.targetLang) {
+                updateTargetLangUI(data.targetLang);
+            }
             break;
             
         case 'voice_status':
@@ -194,6 +191,10 @@ function handleMessage(data) {
 
         case 'user_volume':
             updateUserVolumeDisplay(data.user_id, data.rms);
+            break;
+
+        case 'global_target_lang_update':
+            updateTargetLangUI(data.lang);
             break;
     }
 }
@@ -826,6 +827,24 @@ function setupTargetLangSelect() {
             }
         });
     });
+}
+
+// 全体の翻訳先言語のUI表示を同期する
+function updateTargetLangUI(lang) {
+    if (!lang) return;
+    const uppercaseLang = lang.toUpperCase();
+    
+    if (elements.targetLangOptions) {
+        const option = elements.targetLangOptions.querySelector(`.custom-option[data-value="${uppercaseLang}"]`);
+        if (option) {
+            elements.targetLangOptions.querySelectorAll('.custom-option').forEach(o => o.classList.remove('selected'));
+            option.classList.add('selected');
+            
+            if (elements.targetLangText) {
+                elements.targetLangText.textContent = option.textContent;
+            }
+        }
+    }
 }
 
 
